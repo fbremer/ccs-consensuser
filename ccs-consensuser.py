@@ -274,14 +274,14 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
         return
 
     # write clean fasta files
-    with open(os.path.join(output_dir, basename) + ".clean.fasta", "wt") as f:
+    with open(os.path.join(output_dir, basename) + ".fasta", "wt") as f:
         for r in clean_records_list:
             f.write(r.format("fasta"))
 
     # align clean fasta
     if aligner == "muscle":
-        cline = MuscleCommandline(input=os.path.join(output_dir, basename) + ".clean.fasta",
-                                  out=os.path.join(output_dir, basename) + ".clean.aln", clw=True)
+        cline = MuscleCommandline(input=os.path.join(output_dir, basename) + ".fasta",
+                                  out=os.path.join(output_dir, basename) + ".aln", clw=True)
         try:
             # noinspection PyUnusedLocal
             stdout, stderr = cline()
@@ -291,7 +291,7 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
             return
 
     elif aligner == "clustalw":
-        cline = ClustalwCommandline("clustalw2", infile=os.path.join(output_dir, basename) + ".clean.fasta")
+        cline = ClustalwCommandline("clustalw2", infile=os.path.join(output_dir, basename) + ".fasta")
         try:
             # noinspection PyUnusedLocal
             stdout, stderr = cline()
@@ -305,7 +305,7 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
         return
 
     # parse aligned fasta
-    with open(os.path.join(output_dir, basename) + ".clean.aln", "r") as f:
+    with open(os.path.join(output_dir, basename) + ".aln", "r") as f:
         alignment = AlignIO.read(f, "clustal", alphabet=IUPAC.ambiguous_dna)
 
     # take consensus of aligned fasta
