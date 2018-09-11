@@ -19,6 +19,7 @@ from Bio import SeqIO
 from Bio import pairwise2
 from Bio.Align import AlignInfo
 from Bio.Align.Applications import MuscleCommandline
+from Bio.Align.Applications import ClustalwCommandline
 from Bio.Alphabet import IUPAC
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
@@ -239,7 +240,8 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, num_errors, min_nuc_s
                 continue
 
 
-def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score, min_seqs=1, max_len=None):
+def process_fastq(input_fn, output_dir, num_errors, min_nuc_score,
+                  min_avg_score, min_seqs=1, max_len=None, aligner="muscle"):
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -267,21 +269,35 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
         for r in clean_records:
             f.write(r.format("fasta"))
 
-    cline = MuscleCommandline(input=os.path.join(output_dir, basename) + ".clean.fasta",
-                              out=os.path.join(output_dir, basename) + ".aln.fasta")
-
     # align clean fasta
-    try:
-        # noinspection PyUnusedLocal
-        stdout, stderr = cline()
+    if aligner == "muscle":
+        cline = MuscleCommandline(input=os.path.join(output_dir, basename) + ".clean.fasta",
+                                  out=os.path.join(output_dir, basename) + ".clean.aln", clw=True)
+        try:
+            # noinspection PyUnusedLocal
+            stdout, stderr = cline()
+            log.debug(stderr)
+        except Bio.Application.ApplicationError as e:
+            log.info("alignment failed - {} - {}".format(e, basename))
+            return
 
-    except Bio.Application.ApplicationError as e:
-        log.info("alignment failed - {} - {}".format(e, basename))
+    elif aligner == "clustalw":
+        cline = ClustalwCommandline("clustalw2", infile=os.path.join(output_dir, basename) + ".clean.fasta")
+        try:
+            # noinspection PyUnusedLocal
+            stdout, stderr = cline()
+            log.debug(stderr)
+        except Bio.Application.ApplicationError as e:
+            log.info("alignment failed - {} - {}".format(e, basename))
+            return
+
+    else:
+        log.info("alignment failed - invalid aligner: {} - {}".format(aligner, basename))
         return
 
     # parse aligned fasta
-    with open(os.path.join(output_dir, basename) + ".aln.fasta", "r") as f:
-        alignment = AlignIO.read(f, "fasta", alphabet=IUPAC.ambiguous_dna)
+    with open(os.path.join(output_dir, basename) + ".clean.aln", "r") as f:
+        alignment = AlignIO.read(f, "clustal", alphabet=IUPAC.ambiguous_dna)
 
     # take consensus of aligned fasta
     summary_align = AlignInfo.SummaryInfo(alignment)
@@ -294,7 +310,8 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
         f.write(seq_rec.format("fasta"))
 
 
-def process_file_list(in_file_list, output_dir, num_errors, min_nuc_score, min_avg_score, min_seqs=1, max_len=None):
+def process_file_list(in_file_list, output_dir, num_errors, min_nuc_score,
+                      min_avg_score, min_seqs=1, max_len=None, aligner="muscle"):
     # create pool
     with mp.Pool(min(len(in_file_list), mp.cpu_count())) as p:
         p.starmap(process_fastq, zip(in_file_list,
@@ -303,7 +320,8 @@ def process_file_list(in_file_list, output_dir, num_errors, min_nuc_score, min_a
                                      itertools.repeat(min_nuc_score),
                                      itertools.repeat(min_avg_score),
                                      itertools.repeat(min_seqs),
-                                     itertools.repeat(max_len)
+                                     itertools.repeat(max_len),
+                                     itertools.repeat(aligner)
                                      ))
 
 
@@ -320,14 +338,14 @@ def main(_args):
     if _args.in_file_list is None:
         log.info("Single file mode - {}".format(_args.in_file))
         process_fastq(_args.in_file, output_dir, _args.num_errors, _args.min_nuc_score, _args.min_avg_score,
-                      min_seqs=_args.min_seqs, max_len=_args.max_len)
+                      min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner)
     else:
         log.info("Batch mode - {}".format(_args.in_file_list))
         with open(_args.in_file_list, "r") as f:
             in_file_list = [os.path.join(_args.in_dir, l.strip()) for l in f.readlines()]
 
         process_file_list(in_file_list, output_dir, _args.num_errors, _args.min_nuc_score, _args.min_avg_score,
-                          min_seqs=_args.min_seqs, max_len=_args.max_len)
+                          min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner)
 
 
 if __name__ == "__main__":
@@ -358,6 +376,7 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--min_seqs', type=int, help='min count of sequences before alignment excluded',
                         default=1)
     parser.add_argument('-m', '--max_len', type=int, help='max length overwhich a seq is excluded', default=None)
+    parser.add_argument('-l', '--aligner', help='the alignment software to use. {clustalw, muscle}', default="muscle")
 
     args = parser.parse_args()
 
