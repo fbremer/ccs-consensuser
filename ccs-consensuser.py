@@ -255,23 +255,27 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
     else:
         records = (r for r in SeqIO.parse(input_fn, "fastq", alphabet=IUPAC.ambiguous_dna) if len(r) < max_len)
 
-    clean_records = trim_and_mask_seq_records(records, primer_a, primer_b, num_errors,
-                                              min_nuc_score, min_avg_score, basename)
+    clean_records_gen = trim_and_mask_seq_records(records, primer_a, primer_b, num_errors,
+                                                  min_nuc_score, min_avg_score, basename)
 
-    clean_records = list(clean_records)
-    if len(clean_records) < min_seqs:
+    # filter seqs on n_count
+    clean_records_list = []
+    for r in clean_records_gen:
+        n_count = r.seq.upper().count('N')
+        if (pre_align_max_n is not None) and (n_count > pre_align_max_n):
+            log.info("seq excluded - n_count:{} > pre_align_max_n:{} - {} {}".format(n_count, pre_align_max_n,
+                                                                                     basename, r.id))
+            continue
+        clean_records_list.append(r)
+
+    if len(clean_records_list) < min_seqs:
         log.info(
-            "alignment excluded - seq_count:{} < min_seqs:{} - {}".format(len(clean_records), min_seqs, basename))
+            "alignment excluded - seq_count:{} < min_seqs:{} - {}".format(len(clean_records_list), min_seqs, basename))
         return
 
     # write clean fasta files
     with open(os.path.join(output_dir, basename) + ".clean.fasta", "wt") as f:
-        for r in clean_records:
-            n_count = r.seq.upper().count('N')
-            if (pre_align_max_n is not None) and (n_count > pre_align_max_n):
-                log.info("seq excluded - n_count:{} > pre_align_max_n:{} - {} {}".format(n_count, pre_align_max_n,
-                                                                                         basename, r.id))
-                continue
+        for r in clean_records_list:
             f.write(r.format("fasta"))
 
     # align clean fasta
