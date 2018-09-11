@@ -240,8 +240,8 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, num_errors, min_nuc_s
                 continue
 
 
-def process_fastq(input_fn, output_dir, num_errors, min_nuc_score,
-                  min_avg_score, min_seqs=1, max_len=None, aligner="muscle"):
+def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score, min_seqs=1, max_len=None,
+                  aligner="muscle", pre_align_max_n=None, post_align_max_n=None):
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -267,6 +267,11 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score,
     # write clean fasta files
     with open(os.path.join(output_dir, basename) + ".clean.fasta", "wt") as f:
         for r in clean_records:
+            n_count = r.seq.upper().count('N')
+            if (pre_align_max_n is not None) and (n_count > pre_align_max_n):
+                log.info("seq excluded - n_count:{} > pre_align_max_n:{} - {} {}".format(n_count, pre_align_max_n,
+                                                                                         basename, r.id))
+                continue
             f.write(r.format("fasta"))
 
     # align clean fasta
@@ -304,14 +309,18 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score,
 
     # write consensus fasta
     consensus = summary_align.gap_consensus(ambiguous="N")
+    n_count = consensus.upper().count('N')
+    if (post_align_max_n is not None) and (n_count > post_align_max_n):
+        log.info("alignment excluded - n_count:{} > post_align_max_n:{} - {}".format(n_count, pre_align_max_n, basename))
+        return
     seq = Seq(data=str(consensus), alphabet=IUPAC.ambiguous_dna)
     seq_rec = SeqRecord(seq=seq, id=basename.split("prime_")[0] + "prime", description="{}".format(len(alignment)))
     with open(os.path.join(output_dir, basename) + ".{}.consensus.fasta".format(len(alignment)), "wt") as f:
         f.write(seq_rec.format("fasta"))
 
 
-def process_file_list(in_file_list, output_dir, num_errors, min_nuc_score,
-                      min_avg_score, min_seqs=1, max_len=None, aligner="muscle"):
+def process_file_list(in_file_list, output_dir, num_errors, min_nuc_score, min_avg_score, min_seqs=1, max_len=None,
+                      aligner="muscle", pre_align_max_n=None, post_align_max_n=None):
     # create pool
     with mp.Pool(min(len(in_file_list), mp.cpu_count())) as p:
         p.starmap(process_fastq, zip(in_file_list,
@@ -321,7 +330,9 @@ def process_file_list(in_file_list, output_dir, num_errors, min_nuc_score,
                                      itertools.repeat(min_avg_score),
                                      itertools.repeat(min_seqs),
                                      itertools.repeat(max_len),
-                                     itertools.repeat(aligner)
+                                     itertools.repeat(aligner),
+                                     itertools.repeat(pre_align_max_n),
+                                     itertools.repeat(post_align_max_n)
                                      ))
 
 
@@ -338,14 +349,16 @@ def main(_args):
     if _args.in_file_list is None:
         log.info("Single file mode - {}".format(_args.in_file))
         process_fastq(_args.in_file, output_dir, _args.num_errors, _args.min_nuc_score, _args.min_avg_score,
-                      min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner)
+                      min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
+                      pre_align_max_n=_args.pre_align_max_n, post_align_max_n=_args.post_align_max_n)
     else:
         log.info("Batch mode - {}".format(_args.in_file_list))
         with open(_args.in_file_list, "r") as f:
             in_file_list = [os.path.join(_args.in_dir, l.strip()) for l in f.readlines()]
 
         process_file_list(in_file_list, output_dir, _args.num_errors, _args.min_nuc_score, _args.min_avg_score,
-                          min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner)
+                          min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
+                          pre_align_max_n=_args.pre_align_max_n, post_align_max_n=_args.post_align_max_n)
 
 
 if __name__ == "__main__":
@@ -367,7 +380,8 @@ if __name__ == "__main__":
                                  'GCAGTCGAACATGTAGCTGACTCAGGTCACTCGCCTAAACTTCAGCCATT.'
                                  'TGATTYTTTGGACACCCAGAAGTTTACTACGATGTGATGCTTGCACAAGTGATCCA.'
                                  'fastq'))
-    parser.add_argument('-f', '--in_file_list', help='path to text file w/ an in_file filename on each line', default=None)
+    parser.add_argument('-f', '--in_file_list', help='path to text file w/ an in_file filename on each line',
+                        default=None)
     parser.add_argument('-b', '--in_dir', help='input dir of files named in in_file_list', default=None)
     parser.add_argument('-o', '--out_dir', help='path to output dir', default="output")
     parser.add_argument('-e', '--num_errors', type=int, help='number of errors allowed in primer match', default="2")
@@ -377,6 +391,10 @@ if __name__ == "__main__":
                         default=1)
     parser.add_argument('-m', '--max_len', type=int, help='max length overwhich a seq is excluded', default=None)
     parser.add_argument('-l', '--aligner', help='the alignment software to use. {clustalw, muscle}', default="muscle")
+    parser.add_argument('-p', '--pre_align_max_n', type=int, help='number of Ns allowed in sequences to be aligned',
+                        default="5")
+    parser.add_argument('-t', '--post_align_max_n', type=int, help='number of Ns allowed in final aligned sequences',
+                        default="5")
 
     args = parser.parse_args()
 
