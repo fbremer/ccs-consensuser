@@ -10,8 +10,8 @@ import itertools
 import logging
 import multiprocessing as mp
 import os
+import statistics
 import sys
-from statistics import mode
 
 import Bio
 import numpy as np
@@ -283,24 +283,30 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
         else:
             return True
 
-    # apply filters
+    # apply n_count_filter
     if pre_align_max_n is not None:
         clean_records = [r for r in clean_records if n_count_filter(r, pre_align_max_n, basename)]
 
     if len(clean_records) < min_seqs:
         log.info(
-            "alignment excluded - seq_count:{} < min_seqs:{} after n_count_filter - {}".format(len(clean_records), min_seqs, basename))
+            "alignment excluded - seq_count:{} < min_seqs:{} after n_count_filter - {}".format(len(clean_records),
+                                                                                               min_seqs, basename))
         return
-
+    # apply len_variance_filter
     if max_len_delta is not None:
         # last per seq filter requires stats on full list
-        typical_len = mode([len(r) for r in clean_records])
+        try:
+            typical_len = statistics.mode([len(r) for r in clean_records])
+        except statistics.StatisticsError as _e:
+            log.info("alignment excluded - {} - {}".format(_e, basename))
+            return
         # len variance filter
         clean_records = [r for r in clean_records if len_variance_filter(r, typical_len, max_len_delta, basename)]
 
     if len(clean_records) < min_seqs:
         log.info(
-            "alignment excluded - seq_count:{} < min_seqs:{} after len_variance_filter- {}".format(len(clean_records), min_seqs, basename))
+            "alignment excluded - seq_count:{} < min_seqs:{} after len_variance_filter- {}".format(len(clean_records),
+                                                                                                   min_seqs, basename))
         return
 
     # write clean fasta files
@@ -349,8 +355,8 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
             "alignment excluded - n_count:{} > post_align_max_n:{} - {}".format(n_count, pre_align_max_n, basename))
         return
     seq = Seq(data=str(consensus), alphabet=IUPAC.ambiguous_dna)
-    # noinspection PyTypeChecker
     description = "seq_count:{} n_count:{} seq:len:{}".format(len(alignment), n_count, len(consensus))
+    # noinspection PyTypeChecker
     seq_rec = SeqRecord(seq=seq, id=basename.split("prime_")[0] + "prime", description=description)
     with open(os.path.join(output_dir, basename) + ".{}.consensus.fasta".format(len(alignment)), "wt") as f:
         fasta_entry = seq_rec.format("fasta").strip().split("\n")
