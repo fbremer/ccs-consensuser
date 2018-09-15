@@ -10,3 +10,4 @@ dependencies:
 - numpy
 - muscle
 - clustalw
+- blast
