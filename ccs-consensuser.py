@@ -243,7 +243,8 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
 
 
 def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1, max_len=None,
-                  aligner="muscle", sequence_max_n=None, consensus_max_n=None, max_len_delta=None):
+                  aligner="muscle", sequence_max_n=None, consensus_max_n=None, max_len_delta=None,
+                  expected_length=None):
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -265,7 +266,7 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
             len(clean_records), min_seqs, basename))
         return
 
-    # define filters
+    # define filter functions
     def n_count_filter(r, _sequence_max_n, _basename):
         _n_count = r.seq.upper().count('N')
         if _n_count > _sequence_max_n:
@@ -293,25 +294,30 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
             "alignment excluded - seq_count:{} < min_seqs:{} after n_count_filter - {}".format(len(clean_records),
                                                                                                min_seqs, basename))
         return
-    # apply len_variance_filter
+
+    # determin typical_len for len_variance_filter
+    # should be last per seq filter b/c requires stats on full seq list
     if max_len_delta is not None:
-        # last per seq filter requires stats on full list
-        try:
-            typical_len = statistics.mode([len(r) for r in clean_records])
-        except statistics.StatisticsError as _e:
-            log.info("failover from mode to mean - {} - {}".format(_e, basename))
+        if expected_length is not None:
+            typical_len = expected_length
+        else:
             try:
-                typical_len = statistics.mean([len(r) for r in clean_records])
-            except statistics.StatisticsError as __e:
-                log.info("alignment excluded - {} {} - {}".format(_e, __e, basename))
-                return
-        # len variance filter
-        clean_records = [r for r in clean_records if len_variance_filter(r, typical_len, max_len_delta, basename)]
+                typical_len = statistics.mode([len(r) for r in clean_records])
+            except statistics.StatisticsError as _e:
+                log.info("failover from mode to mean - {} - {}".format(_e, basename))
+                try:
+                    typical_len = statistics.mean([len(r) for r in clean_records])
+                except statistics.StatisticsError as __e:
+                    log.info("alignment excluded - {} {} - {}".format(_e, __e, basename))
+                    return
+        # apply len variance filter
+        clean_records = [r for r in clean_records
+                         if len_variance_filter(r, typical_len, max_len_delta, basename)]
 
     if len(clean_records) < min_seqs:
         log.info(
-            "alignment excluded - seq_count:{} < min_seqs:{} after len_variance_filter- {}".format(len(clean_records),
-                                                                                                   min_seqs, basename))
+            "alignment excluded - seq_count:{} < min_seqs:{} after len_variance_filter - {}".format(len(clean_records),
+                                                                                                    min_seqs, basename))
         return
 
     # write clean fasta files
@@ -370,8 +376,8 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
 
 
 def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1,
-                      max_len=None,
-                      aligner="muscle", sequence_max_n=None, consensus_max_n=None, max_len_delta=None):
+                      max_len=None, aligner="muscle", sequence_max_n=None, consensus_max_n=None, max_len_delta=None,
+                      expected_length=None):
     # create pool
     with mp.Pool(min(len(in_file_list), mp.cpu_count())) as p:
         p.starmap(process_fastq, zip(in_file_list,
@@ -384,7 +390,8 @@ def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score,
                                      itertools.repeat(aligner),
                                      itertools.repeat(sequence_max_n),
                                      itertools.repeat(consensus_max_n),
-                                     itertools.repeat(max_len_delta)
+                                     itertools.repeat(max_len_delta),
+                                     itertools.repeat(expected_length)
                                      ))
 
 
@@ -406,7 +413,7 @@ def main(_args):
         process_fastq(_args.in_file, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
                       min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
                       sequence_max_n=_args.sequence_max_n, consensus_max_n=_args.consensus_max_n,
-                      max_len_delta=_args.max_len_delta)
+                      max_len_delta=_args.max_len_delta, expected_length=_args.expected_length)
     else:
         log.info("Batch mode - {}".format(_args.in_file_list))
         with open(_args.in_file_list, "r") as f:
@@ -415,7 +422,7 @@ def main(_args):
         process_file_list(in_file_list, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
                           min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
                           sequence_max_n=_args.sequence_max_n, consensus_max_n=_args.consensus_max_n,
-                          max_len_delta=_args.max_len_delta)
+                          max_len_delta=_args.max_len_delta, expected_length=_args.expected_length)
 
 
 if __name__ == "__main__":
@@ -427,6 +434,7 @@ if __name__ == "__main__":
             sys.stderr.write('error: %s\n' % message)
             self.print_help()
             sys.exit(2)
+
 
     parser = MyParser()
 
@@ -445,9 +453,8 @@ if __name__ == "__main__":
     parser.add_argument('--overwrite', help='set this flag to disable creating new out dir', action='store_true')
 
     # batch mode filelist settings
-    parser.add_argument('-f', '--in_file_list', help='path to text file w/ an in_file filename on each line',
-                        default=None)
-    parser.add_argument('-b', '--in_dir', help='input dir of files named in in_file_list', default=None)
+    parser.add_argument('--in_file_list', help='path to text file w/ an in_file filename on each line', default=None)
+    parser.add_argument('--in_dir', help='input dir of files named in in_file_list', default=None)
 
     # base filters
     parser.add_argument('-n', '--min_base_score', type=int, help='score below which a nuc is masked', default="60")
@@ -455,12 +462,15 @@ if __name__ == "__main__":
     # sequence filters
     parser.add_argument('-e', '--primer_mismatch', type=int, help='number of errors allowed in primer match',
                         default="2")
-    parser.add_argument('-m', '--max_len', type=int, help='max length overwhich a seq is excluded', default=None)
-    parser.add_argument('-a', '--min_seq_score', type=int, help='avg score below which a seq is excluded', default=None)
     parser.add_argument('-p', '--sequence_max_n', type=int, help='number of Ns allowed in sequences to be aligned',
                         default="5")
     parser.add_argument('-d', '--max_len_delta', type=int, help='allowed variation from mode of sequence length',
                         default="5")
+    # optional sequence filters
+    parser.add_argument('--expected_length', type=int, help='optional, replaces average in max_len_delta filter',
+                        default=None)
+    parser.add_argument('--max_len', type=int, help='max length overwhich a seq is excluded', default=None)
+    parser.add_argument('--min_seq_score', type=int, help='avg score below which a seq is excluded', default=None)
 
     # alignment filters
     parser.add_argument('-s', '--min_seqs', type=int, help='min count of sequences before alignment excluded',
