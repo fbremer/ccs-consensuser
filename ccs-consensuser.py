@@ -76,13 +76,13 @@ def _remove_adaptor(seq, region, right_side=True):
         return seq[pos + len(region):]
 
 
-def trim_adaptor(seq, adaptor, num_errors, right_side=True):
+def trim_adaptor(seq, adaptor, primer_mismatch, right_side=True):
     """Trim the given adaptor sequence from a starting sequence.
     * seq can be either of:
        - string
        - Seq
     * adaptor is a string sequence
-    * num_errors specifies how many errors are allowed in the match between
+    * primer_mismatch specifies how many errors are allowed in the match between
     adaptor and the base sequence. Matches with more than this number of errors
     are not allowed.
     """
@@ -104,7 +104,7 @@ def trim_adaptor(seq, adaptor, num_errors, right_side=True):
     matches = sum((1 if s == adapt_region[i] else 0) for i, s in
                   enumerate(seq_region))
     # too many errors -- no trimming
-    if (len(adaptor) - matches) > num_errors:
+    if (len(adaptor) - matches) > primer_mismatch:
         return seq
     # remove the adaptor sequence and return the result
     else:
@@ -112,12 +112,12 @@ def trim_adaptor(seq, adaptor, num_errors, right_side=True):
                                right_side)
 
 
-def trim_adaptor_w_qual(seq, qual, adaptor, num_errors, right_side=True):
+def trim_adaptor_w_qual(seq, qual, adaptor, primer_mismatch, right_side=True):
     """Trim an adaptor with an associated quality string.
     Works like trimmed adaptor, but also trims an associated quality score.
     """
     assert len(seq) == len(qual)
-    tseq = trim_adaptor(seq, adaptor, num_errors, right_side=right_side)
+    tseq = trim_adaptor(seq, adaptor, primer_mismatch, right_side=right_side)
     if right_side:
         pos = seq.find(tseq)
     else:
@@ -155,7 +155,7 @@ def create_unique_dir(path, limit=99):
         raise Exception(msg.format(original, limit))
 
 
-def trim_both_ends(seq_rec, primer_a, primer_b, num_errors, reverse_complement=False):
+def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
     if reverse_complement:
         rc = seq_rec.reverse_complement()
         un_trimed_seq = rc.seq
@@ -171,7 +171,7 @@ def trim_both_ends(seq_rec, primer_a, primer_b, num_errors, reverse_complement=F
     half_trimed_seq, half_trimed_qual = trim_adaptor_w_qual(un_trimed_seq,
                                                             un_trimed_qual,
                                                             adaptor=primer_a,
-                                                            num_errors=num_errors,
+                                                            primer_mismatch=primer_mismatch,
                                                             right_side=False)
     if len(half_trimed_seq) < len(un_trimed_seq):
         found_a = True
@@ -179,7 +179,7 @@ def trim_both_ends(seq_rec, primer_a, primer_b, num_errors, reverse_complement=F
     full_trimed_seq, full_trimed_qual = trim_adaptor_w_qual(half_trimed_seq,
                                                             half_trimed_qual,
                                                             adaptor=primer_b,
-                                                            num_errors=num_errors,
+                                                            primer_mismatch=primer_mismatch,
                                                             right_side=True)
     if len(full_trimed_seq) < len(half_trimed_seq):
         found_b = True
@@ -210,30 +210,31 @@ def mask_seq_record(seq_rec, min_score, inplace=False):
     return masked_seq_req
 
 
-def trim_and_mask_seq_records(records, primer_a, primer_b, num_errors, min_nuc_score, min_avg_score, basename):
+def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_base_score, basename,
+                              min_seq_score=None):
     for seq_rec in records:
-        trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, num_errors, reverse_complement=False)
+        trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False)
 
         # primers found in forword direction
         if trimed_seq_rec is not None:
             avg_score = np.mean(trimed_seq_rec.letter_annotations["phred_quality"])
-            if avg_score < min_avg_score:
-                log.info("seq excluded - avg_score:{:4.2f} < min_avg_score:{} - {} {}".format(avg_score, min_avg_score,
+            if min_seq_score and (avg_score < min_seq_score):
+                log.info("seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
                                                                                               basename, seq_rec.id))
                 continue
-            yield mask_seq_record(trimed_seq_rec, min_nuc_score, inplace=True)
+            yield mask_seq_record(trimed_seq_rec, min_base_score, inplace=True)
 
         # primers not found in forword direction
         else:
-            trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, num_errors, reverse_complement=True)
+            trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=True)
             if trimed_seq_rec is not None:  # primers found in reverse direction
                 avg_score = np.mean(trimed_seq_rec.letter_annotations["phred_quality"])
-                if avg_score < min_avg_score:
+                if min_seq_score and (avg_score < min_seq_score):
                     log.info(
-                        "seq excluded - avg_score:{:4.2f} < min_avg_score:{} - {} {}".format(avg_score, min_avg_score,
+                        "seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
                                                                                              basename, seq_rec.id))
                     continue
-                yield mask_seq_record(trimed_seq_rec, min_nuc_score, inplace=True)
+                yield mask_seq_record(trimed_seq_rec, min_base_score, inplace=True)
 
             # primers not found in either direction
             else:
@@ -241,8 +242,8 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, num_errors, min_nuc_s
                 continue
 
 
-def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score, min_seqs=1, max_len=None,
-                  aligner="muscle", pre_align_max_n=None, post_align_max_n=None, max_len_delta=None):
+def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1, max_len=None,
+                  aligner="muscle", sequence_max_n=None, consensus_max_n=None, max_len_delta=None):
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -256,20 +257,20 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
     else:
         records = (r for r in SeqIO.parse(input_fn, "fastq", alphabet=IUPAC.ambiguous_dna) if len(r) < max_len)
 
-    clean_records = list(trim_and_mask_seq_records(records, primer_a, primer_b, num_errors,
-                                                   min_nuc_score, min_avg_score, basename))
+    clean_records = list(trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch,
+                                                   min_base_score, basename, min_seq_score))
 
     if len(clean_records) < min_seqs:
         log.info("alignment excluded - seq_count:{} < min_seqs:{} after trim_and_mask_seq_records - {}".format(
-                 len(clean_records), min_seqs, basename))
+            len(clean_records), min_seqs, basename))
         return
 
     # define filters
-    def n_count_filter(r, _pre_align_max_n, _basename):
+    def n_count_filter(r, _sequence_max_n, _basename):
         _n_count = r.seq.upper().count('N')
-        if _n_count > _pre_align_max_n:
-            log.info("seq excluded - n_count:{} > pre_align_max_n:{} - {} {}".format(_n_count, _pre_align_max_n,
-                                                                                     _basename, r.id))
+        if _n_count > _sequence_max_n:
+            log.info("seq excluded - n_count:{} > sequence_max_n:{} - {} {}".format(_n_count, _sequence_max_n,
+                                                                                    _basename, r.id))
             return False
         else:
             return True
@@ -284,8 +285,8 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
             return True
 
     # apply n_count_filter
-    if pre_align_max_n is not None:
-        clean_records = [r for r in clean_records if n_count_filter(r, pre_align_max_n, basename)]
+    if sequence_max_n is not None:
+        clean_records = [r for r in clean_records if n_count_filter(r, sequence_max_n, basename)]
 
     if len(clean_records) < min_seqs:
         log.info(
@@ -298,8 +299,12 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
         try:
             typical_len = statistics.mode([len(r) for r in clean_records])
         except statistics.StatisticsError as _e:
-            log.info("alignment excluded - {} - {}".format(_e, basename))
-            return
+            log.info("failover from mode to mean - {} - {}".format(_e, basename))
+            try:
+                typical_len = statistics.mean([len(r) for r in clean_records])
+            except statistics.StatisticsError as __e:
+                log.info("alignment excluded - {} {} - {}".format(_e, __e, basename))
+                return
         # len variance filter
         clean_records = [r for r in clean_records if len_variance_filter(r, typical_len, max_len_delta, basename)]
 
@@ -350,9 +355,9 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
     # write consensus fasta
     consensus = summary_align.gap_consensus(ambiguous="N")
     n_count = consensus.upper().count('N')
-    if (post_align_max_n is not None) and (n_count > post_align_max_n):
+    if (consensus_max_n is not None) and (n_count > consensus_max_n):
         log.info(
-            "alignment excluded - n_count:{} > post_align_max_n:{} - {}".format(n_count, pre_align_max_n, basename))
+            "alignment excluded - n_count:{} > consensus_max_n:{} - {}".format(n_count, sequence_max_n, basename))
         return
     seq = Seq(data=str(consensus), alphabet=IUPAC.ambiguous_dna)
     description = "seq_count:{} n_count:{} seq:len:{}".format(len(alignment), n_count, len(consensus))
@@ -364,20 +369,21 @@ def process_fastq(input_fn, output_dir, num_errors, min_nuc_score, min_avg_score
         f.write(fasta_entry)
 
 
-def process_file_list(in_file_list, output_dir, num_errors, min_nuc_score, min_avg_score, min_seqs=1, max_len=None,
-                      aligner="muscle", pre_align_max_n=None, post_align_max_n=None, max_len_delta=None):
+def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1,
+                      max_len=None,
+                      aligner="muscle", sequence_max_n=None, consensus_max_n=None, max_len_delta=None):
     # create pool
     with mp.Pool(min(len(in_file_list), mp.cpu_count())) as p:
         p.starmap(process_fastq, zip(in_file_list,
                                      itertools.repeat(output_dir),
-                                     itertools.repeat(num_errors),
-                                     itertools.repeat(min_nuc_score),
-                                     itertools.repeat(min_avg_score),
+                                     itertools.repeat(primer_mismatch),
+                                     itertools.repeat(min_base_score),
+                                     itertools.repeat(min_seq_score),
                                      itertools.repeat(min_seqs),
                                      itertools.repeat(max_len),
                                      itertools.repeat(aligner),
-                                     itertools.repeat(pre_align_max_n),
-                                     itertools.repeat(post_align_max_n),
+                                     itertools.repeat(sequence_max_n),
+                                     itertools.repeat(consensus_max_n),
                                      itertools.repeat(max_len_delta)
                                      ))
 
@@ -388,24 +394,27 @@ def main(_args):
     if not os.path.isdir(output_dir):
         log.info("Creating output directory - {}".format(output_dir))
         os.makedirs(output_dir)
-    else:  # If it exists and is empty, use it. If it exists and is not empty, create and use new unique directory
+    # if overwrite is set and dir exists, just use it
+    elif not _args.overwrite:
+        # If dir exists, and is empty, use it.
+        # If overwrite is not set, dir exists, and dir is not empty, create and use new unique directory
         output_dir = create_unique_dir(output_dir)
 
     # call function based on batch or single mode
     if _args.in_file_list is None:
         log.info("Single file mode - {}".format(_args.in_file))
-        process_fastq(_args.in_file, output_dir, _args.num_errors, _args.min_nuc_score, _args.min_avg_score,
+        process_fastq(_args.in_file, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
                       min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
-                      pre_align_max_n=_args.pre_align_max_n, post_align_max_n=_args.post_align_max_n,
+                      sequence_max_n=_args.sequence_max_n, consensus_max_n=_args.consensus_max_n,
                       max_len_delta=_args.max_len_delta)
     else:
         log.info("Batch mode - {}".format(_args.in_file_list))
         with open(_args.in_file_list, "r") as f:
             in_file_list = [os.path.join(_args.in_dir, l.strip()) for l in f.readlines()]
 
-        process_file_list(in_file_list, output_dir, _args.num_errors, _args.min_nuc_score, _args.min_avg_score,
+        process_file_list(in_file_list, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
                           min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
-                          pre_align_max_n=_args.pre_align_max_n, post_align_max_n=_args.post_align_max_n,
+                          sequence_max_n=_args.sequence_max_n, consensus_max_n=_args.consensus_max_n,
                           max_len_delta=_args.max_len_delta)
 
 
@@ -419,8 +428,12 @@ if __name__ == "__main__":
             self.print_help()
             sys.exit(2)
 
-
     parser = MyParser()
+
+    # settings/options
+    parser.add_argument('-l', '--aligner', help='the alignment software to use. {clustalw, muscle}', default="muscle")
+
+    # files/directories
     parser.add_argument('-i', '--in_file', help='path to input file',
                         default=('Final.HQpolish99nomaxmin600.ccs.BX140414_001.5prime_'
                                  'CACAGAGACACGCACA.'
@@ -428,22 +441,31 @@ if __name__ == "__main__":
                                  'GCAGTCGAACATGTAGCTGACTCAGGTCACTCGCCTAAACTTCAGCCATT.'
                                  'TGATTYTTTGGACACCCAGAAGTTTACTACGATGTGATGCTTGCACAAGTGATCCA.'
                                  'fastq'))
+    parser.add_argument('-o', '--out_dir', help='path to output dir', default="output")
+    parser.add_argument('--overwrite', help='set this flag to disable creating new out dir', action='store_true')
+
+    # batch mode filelist settings
     parser.add_argument('-f', '--in_file_list', help='path to text file w/ an in_file filename on each line',
                         default=None)
     parser.add_argument('-b', '--in_dir', help='input dir of files named in in_file_list', default=None)
-    parser.add_argument('-o', '--out_dir', help='path to output dir', default="output")
-    parser.add_argument('-e', '--num_errors', type=int, help='number of errors allowed in primer match', default="2")
-    parser.add_argument('-n', '--min_nuc_score', type=int, help='score below which a nuc is masked', default="60")
-    parser.add_argument('-a', '--min_avg_score', type=int, help='avg score below which a seq is excluded', default="80")
-    parser.add_argument('-s', '--min_seqs', type=int, help='min count of sequences before alignment excluded',
-                        default="5")
+
+    # base filters
+    parser.add_argument('-n', '--min_base_score', type=int, help='score below which a nuc is masked', default="60")
+
+    # sequence filters
+    parser.add_argument('-e', '--primer_mismatch', type=int, help='number of errors allowed in primer match',
+                        default="2")
     parser.add_argument('-m', '--max_len', type=int, help='max length overwhich a seq is excluded', default=None)
-    parser.add_argument('-l', '--aligner', help='the alignment software to use. {clustalw, muscle}', default="muscle")
-    parser.add_argument('-p', '--pre_align_max_n', type=int, help='number of Ns allowed in sequences to be aligned',
-                        default="5")
-    parser.add_argument('-t', '--post_align_max_n', type=int, help='number of Ns allowed in final aligned sequences',
+    parser.add_argument('-a', '--min_seq_score', type=int, help='avg score below which a seq is excluded', default=None)
+    parser.add_argument('-p', '--sequence_max_n', type=int, help='number of Ns allowed in sequences to be aligned',
                         default="5")
     parser.add_argument('-d', '--max_len_delta', type=int, help='allowed variation from mode of sequence length',
+                        default="5")
+
+    # alignment filters
+    parser.add_argument('-s', '--min_seqs', type=int, help='min count of sequences before alignment excluded',
+                        default="5")
+    parser.add_argument('-t', '--consensus_max_n', type=int, help='number of Ns allowed in final aligned sequences',
                         default="5")
 
     args = parser.parse_args()
