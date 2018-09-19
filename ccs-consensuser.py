@@ -127,6 +127,68 @@ def trim_adaptor_w_qual(seq, qual, adaptor, primer_mismatch, right_side=True):
     return tseq, tqual
 
 
+def gap_consensus(summary_align, threshold=.7, input_ambiguous=None, output_ambiguous="X",
+                  consensus_alpha=None, require_multiple=False):
+    """Output a fast consensus sequence of the alignment, allowing gaps.
+
+    Same as dumb_consensus(), but allows gap on the output.
+
+    Things to do:
+     - Let the user define that with only one gap, the result
+       character in consensus is gap.
+     - Let the user select gap character, now
+       it takes the same as input.
+
+    """
+    # Iddo Friedberg, 1-JUL-2004: changed ambiguous default to "X"
+    consensus = ''
+
+    # find the length of the consensus we are creating
+    con_len = summary_align.alignment.get_alignment_length()
+
+    # go through each seq item
+    for n in range(con_len):
+        # keep track of the counts of the different atoms we get
+        atom_dict = {}
+        num_atoms = 0
+
+        for record in summary_align.alignment:
+            # make sure we haven't run past the end of any sequences
+            # if they are of different lengths
+            if n < len(record.seq):
+                if record.seq[n] != input_ambiguous:
+                    if record.seq[n] not in atom_dict:
+                        atom_dict[record.seq[n]] = 1
+                    else:
+                        atom_dict[record.seq[n]] += 1
+
+                    num_atoms += 1
+
+        max_atoms = []
+        max_size = 0
+
+        for atom in atom_dict:
+            if atom_dict[atom] > max_size:
+                max_atoms = [atom]
+                max_size = atom_dict[atom]
+            elif atom_dict[atom] == max_size:
+                max_atoms.append(atom)
+
+        if require_multiple and num_atoms == 1:
+            consensus += output_ambiguous
+        elif (len(max_atoms) == 1) and ((float(max_size) / float(num_atoms)) >= threshold):
+            consensus += max_atoms[0]
+        else:
+            consensus += output_ambiguous
+
+    # we need to guess a consensus alphabet if one isn't specified
+    if consensus_alpha is None:
+        # noinspection PyProtectedMember
+        consensus_alpha = summary_align._guess_consensus_alphabet(output_ambiguous)
+
+    return Seq(consensus, consensus_alpha)
+
+
 def create_unique_dir(path, limit=99):
     """Return a path to an empty directory. Either the dir at path, or a dir of the form 'path + _01'
     :param path: The initial path to use
@@ -244,7 +306,8 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
 
 def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1, max_len=None,
                   aligner="muscle", sequence_max_n=None, alignment_max_n=None, max_len_delta=None,
-                  expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False):
+                  expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
+                  input_ambiguous=None, output_ambiguous="X"):
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -359,9 +422,9 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
     summary_align = AlignInfo.SummaryInfo(alignment)
 
     # write consensus fasta
-    consensus = summary_align.gap_consensus(threshold=consensus_threshold, ambiguous="N",
-                                            consensus_alpha=IUPAC.ambiguous_dna,
-                                            require_multiple=consensus_require_multiple)
+    consensus = gap_consensus(summary_align, threshold=consensus_threshold, input_ambiguous=input_ambiguous,
+                              output_ambiguous=output_ambiguous, consensus_alpha=IUPAC.ambiguous_dna,
+                              require_multiple=consensus_require_multiple)
     n_count = consensus.upper().count('N')
     if (alignment_max_n is not None) and (n_count > alignment_max_n):
         log.info(
@@ -379,7 +442,8 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
 
 def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1,
                       max_len=None, aligner="muscle", sequence_max_n=None, alignment_max_n=None, max_len_delta=None,
-                      expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False):
+                      expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
+                      input_ambiguous=None, output_ambiguous="X"):
     # create pool
     with mp.Pool(min(len(in_file_list), mp.cpu_count())) as p:
         p.starmap(process_fastq, zip(in_file_list,
@@ -395,7 +459,9 @@ def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score,
                                      itertools.repeat(max_len_delta),
                                      itertools.repeat(expected_length),
                                      itertools.repeat(consensus_threshold),
-                                     itertools.repeat(consensus_require_multiple)
+                                     itertools.repeat(consensus_require_multiple),
+                                     itertools.repeat(input_ambiguous),
+                                     itertools.repeat(output_ambiguous)
                                      ))
 
 
@@ -419,7 +485,8 @@ def main(_args):
                       sequence_max_n=_args.sequence_max_n, alignment_max_n=_args.alignment_max_n,
                       max_len_delta=_args.max_len_delta, expected_length=_args.expected_length,
                       consensus_threshold=_args.consensus_threshold,
-                      consensus_require_multiple=_args.consensus_require_multiple)
+                      consensus_require_multiple=_args.consensus_require_multiple,
+                      input_ambiguous=_args.input_ambiguous, output_ambiguous=_args.output_ambiguous)
     else:
         log.info("Batch mode - {}".format(_args.in_file_list))
         with open(_args.in_file_list, "r") as f:
@@ -430,7 +497,8 @@ def main(_args):
                           sequence_max_n=_args.sequence_max_n, alignment_max_n=_args.alignment_max_n,
                           max_len_delta=_args.max_len_delta, expected_length=_args.expected_length,
                           consensus_threshold=_args.consensus_threshold,
-                          consensus_require_multiple=_args.consensus_require_multiple)
+                          consensus_require_multiple=_args.consensus_require_multiple,
+                          input_ambiguous=_args.input_ambiguous, output_ambiguous=_args.output_ambiguous)
 
 
 if __name__ == "__main__":
@@ -491,6 +559,8 @@ if __name__ == "__main__":
                         default=".7")
     parser.add_argument('--consensus_require_multiple', help='require multiple instanses for consensus to call a base',
                         action='store_true')
+    parser.add_argument('--input_ambiguous', help='input dir of files named in in_file_list', default=None)
+    parser.add_argument('--output_ambiguous', help='input dir of files named in in_file_list', default="N")
 
     args = parser.parse_args()
 
