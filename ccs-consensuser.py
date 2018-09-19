@@ -305,7 +305,8 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
                 continue
 
 
-def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seq_count=1, max_len=None,
+def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seq_count=1,
+                  max_len=None,
                   aligner="muscle", sequence_max_mask=None, alignment_max_amb=None, max_len_delta=None,
                   expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
                   mask_char=None, consensus_ambiguous_char="X", consensus_ignore_mask_char=False):
@@ -335,7 +336,7 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
         _n_count = r.seq.upper().count(mask_char)
         if _n_count > _sequence_max_mask:
             log.info("seq excluded - mask_count:{} > sequence_max_mask:{} - {} {}".format(_n_count, _sequence_max_mask,
-                                                                                         _basename, r.id))
+                                                                                          _basename, r.id))
             return False
         else:
             return True
@@ -355,8 +356,9 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
 
     if len(clean_records) < min_seq_count:
         log.info(
-            "alignment excluded - seq_count:{} < min_seq_count:{} after mask_count_filter - {}".format(len(clean_records),
-                                                                                                  min_seq_count, basename))
+            "alignment excluded - seq_count:{} < min_seq_count:{} after mask_count_filter - {}".format(
+                len(clean_records),
+                min_seq_count, basename))
         return
 
     # determin typical_len for len_variance_filter
@@ -380,8 +382,9 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
 
     if len(clean_records) < min_seq_count:
         log.info(
-            "alignment excluded - seq_count:{} < min_seq_count:{} after len_variance_filter - {}".format(len(clean_records),
-                                                                                                    min_seq_count, basename))
+            "alignment excluded - seq_count:{} < min_seq_count:{} after len_variance_filter - {}".format(
+                len(clean_records),
+                min_seq_count, basename))
         return
 
     # write clean fasta files
@@ -436,7 +439,8 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
     amb_count = consensus.upper().count(mask_char)
     if (alignment_max_amb is not None) and (amb_count > alignment_max_amb):
         log.info(
-            "alignment excluded - amb_count:{} > alignment_max_amb:{} - {}".format(amb_count, alignment_max_amb, basename))
+            "alignment excluded - amb_count:{} > alignment_max_amb:{} - {}".format(amb_count, alignment_max_amb,
+                                                                                   basename))
         return
     seq = Seq(data=str(consensus), alphabet=IUPAC.ambiguous_dna)
     description = "seq_count:{} amb_count:{} seq:len:{}".format(len(alignment), amb_count, len(consensus))
@@ -449,7 +453,8 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
 
 
 def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seq_count=1,
-                      max_len=None, aligner="muscle", sequence_max_mask=None, alignment_max_amb=None, max_len_delta=None,
+                      max_len=None, aligner="muscle", sequence_max_mask=None, alignment_max_amb=None,
+                      max_len_delta=None,
                       expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
                       mask_char=None, consensus_ambiguous_char="X", consensus_ignore_mask_char=False):
     # create pool
@@ -571,7 +576,8 @@ if __name__ == "__main__":
                         default=".7")
     parser.add_argument('--consensus_require_multiple', help='require multiple instanses for consensus to call a base',
                         action='store_true')
-    parser.add_argument('--consensus_ambiguous_char', help='char representing bases under consensus threshold', default="n")
+    parser.add_argument('--consensus_ambiguous_char', help='char representing bases under consensus threshold',
+                        default="n")
     parser.add_argument('--consensus_ignore_mask_char', help='discount mask char when calculating consensus',
                         action='store_true')
 
