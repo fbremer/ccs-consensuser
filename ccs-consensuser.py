@@ -127,7 +127,7 @@ def trim_adaptor_w_qual(seq, qual, adaptor, primer_mismatch, right_side=True):
     return tseq, tqual
 
 
-def gap_consensus(summary_align, threshold=.7, mask_char=None, consensus_ambiguous_char="X",
+def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguous_char="X",
                   consensus_alpha=None, require_multiple=False, consensus_ignore_mask_char=False):
     """Output a fast consensus sequence of the alignment, allowing gaps.
 
@@ -306,10 +306,9 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
 
 
 def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seq_count=1,
-                  max_len=None,
-                  aligner="muscle", sequence_max_mask=None, alignment_max_amb=None, max_len_delta=None,
+                  max_len=None, aligner="muscle", sequence_max_mask=None, alignment_max_amb=None, max_len_delta=None,
                   expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
-                  mask_char=None, consensus_ambiguous_char="X", consensus_ignore_mask_char=False):
+                  mask_char="N", consensus_ambiguous_char="X", consensus_ignore_mask_char=False):
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -324,7 +323,7 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
         records = (r for r in SeqIO.parse(input_fn, "fastq", alphabet=IUPAC.ambiguous_dna) if len(r) < max_len)
 
     clean_records = list(trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch,
-                                                   min_base_score, basename, min_seq_score))
+                                                   min_base_score, basename, mask_char, min_seq_score))
 
     if len(clean_records) < min_seq_count:
         log.info("alignment excluded - seq_count:{} < min_seq_count:{} after trim_and_mask_seq_records - {}".format(
@@ -456,7 +455,7 @@ def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score,
                       max_len=None, aligner="muscle", sequence_max_mask=None, alignment_max_amb=None,
                       max_len_delta=None,
                       expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
-                      mask_char=None, consensus_ambiguous_char="X", consensus_ignore_mask_char=False):
+                      mask_char="N", consensus_ambiguous_char="X", consensus_ignore_mask_char=False):
     # create pool
     with mp.Pool(min(len(in_file_list), mp.cpu_count())) as p:
         p.starmap(process_fastq, zip(in_file_list,
