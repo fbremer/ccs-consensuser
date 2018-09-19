@@ -243,8 +243,8 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
 
 
 def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1, max_len=None,
-                  aligner="muscle", sequence_max_n=None, consensus_max_n=None, max_len_delta=None,
-                  expected_length=None):
+                  aligner="muscle", sequence_max_n=None, alignment_max_n=None, max_len_delta=None,
+                  expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False):
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -359,11 +359,13 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
     summary_align = AlignInfo.SummaryInfo(alignment)
 
     # write consensus fasta
-    consensus = summary_align.gap_consensus(ambiguous="N")
+    consensus = summary_align.gap_consensus(threshold=consensus_threshold, ambiguous="N",
+                                            consensus_alpha=IUPAC.ambiguous_dna,
+                                            require_multiple=consensus_require_multiple)
     n_count = consensus.upper().count('N')
-    if (consensus_max_n is not None) and (n_count > consensus_max_n):
+    if (alignment_max_n is not None) and (n_count > alignment_max_n):
         log.info(
-            "alignment excluded - n_count:{} > consensus_max_n:{} - {}".format(n_count, sequence_max_n, basename))
+            "alignment excluded - n_count:{} > alignment_max_n:{} - {}".format(n_count, sequence_max_n, basename))
         return
     seq = Seq(data=str(consensus), alphabet=IUPAC.ambiguous_dna)
     description = "seq_count:{} n_count:{} seq:len:{}".format(len(alignment), n_count, len(consensus))
@@ -376,8 +378,8 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
 
 
 def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1,
-                      max_len=None, aligner="muscle", sequence_max_n=None, consensus_max_n=None, max_len_delta=None,
-                      expected_length=None):
+                      max_len=None, aligner="muscle", sequence_max_n=None, alignment_max_n=None, max_len_delta=None,
+                      expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False):
     # create pool
     with mp.Pool(min(len(in_file_list), mp.cpu_count())) as p:
         p.starmap(process_fastq, zip(in_file_list,
@@ -389,9 +391,11 @@ def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score,
                                      itertools.repeat(max_len),
                                      itertools.repeat(aligner),
                                      itertools.repeat(sequence_max_n),
-                                     itertools.repeat(consensus_max_n),
+                                     itertools.repeat(alignment_max_n),
                                      itertools.repeat(max_len_delta),
-                                     itertools.repeat(expected_length)
+                                     itertools.repeat(expected_length),
+                                     itertools.repeat(consensus_threshold),
+                                     itertools.repeat(consensus_require_multiple)
                                      ))
 
 
@@ -412,8 +416,10 @@ def main(_args):
         log.info("Single file mode - {}".format(_args.in_file))
         process_fastq(_args.in_file, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
                       min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
-                      sequence_max_n=_args.sequence_max_n, consensus_max_n=_args.consensus_max_n,
-                      max_len_delta=_args.max_len_delta, expected_length=_args.expected_length)
+                      sequence_max_n=_args.sequence_max_n, alignment_max_n=_args.alignment_max_n,
+                      max_len_delta=_args.max_len_delta, expected_length=_args.expected_length,
+                      consensus_threshold=_args.consensus_threshold,
+                      consensus_require_multiple=_args.consensus_require_multiple)
     else:
         log.info("Batch mode - {}".format(_args.in_file_list))
         with open(_args.in_file_list, "r") as f:
@@ -421,8 +427,10 @@ def main(_args):
 
         process_file_list(in_file_list, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
                           min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
-                          sequence_max_n=_args.sequence_max_n, consensus_max_n=_args.consensus_max_n,
-                          max_len_delta=_args.max_len_delta, expected_length=_args.expected_length)
+                          sequence_max_n=_args.sequence_max_n, alignment_max_n=_args.alignment_max_n,
+                          max_len_delta=_args.max_len_delta, expected_length=_args.expected_length,
+                          consensus_threshold=_args.consensus_threshold,
+                          consensus_require_multiple=_args.consensus_require_multiple)
 
 
 if __name__ == "__main__":
@@ -475,8 +483,14 @@ if __name__ == "__main__":
     # alignment filters
     parser.add_argument('-s', '--min_seqs', type=int, help='min count of sequences before alignment excluded',
                         default="5")
-    parser.add_argument('-t', '--consensus_max_n', type=int, help='number of Ns allowed in final aligned sequences',
+    parser.add_argument('-t', '--alignment_max_n', type=int, help='number of Ns allowed in final aligned sequences',
                         default="5")
+
+    # consensus options
+    parser.add_argument('--consensus_threshold', type=float, help='proportion threshold for consensus to call a base.',
+                        default=".7")
+    parser.add_argument('--consensus_require_multiple', help='require multiple instanses for consensus to call a base',
+                        action='store_true')
 
     args = parser.parse_args()
 
