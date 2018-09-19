@@ -127,8 +127,8 @@ def trim_adaptor_w_qual(seq, qual, adaptor, primer_mismatch, right_side=True):
     return tseq, tqual
 
 
-def gap_consensus(summary_align, threshold=.7, input_ambiguous=None, output_ambiguous="X",
-                  consensus_alpha=None, require_multiple=False):
+def gap_consensus(summary_align, threshold=.7, mask_char=None, consensus_ambiguous="X",
+                  consensus_alpha=None, require_multiple=False, consensus_ignore_mask_char=False):
     """Output a fast consensus sequence of the alignment, allowing gaps.
 
     Same as dumb_consensus(), but allows gap on the output.
@@ -156,13 +156,14 @@ def gap_consensus(summary_align, threshold=.7, input_ambiguous=None, output_ambi
             # make sure we haven't run past the end of any sequences
             # if they are of different lengths
             if n < len(record.seq):
-                if record.seq[n] != input_ambiguous:
-                    if record.seq[n] not in atom_dict:
-                        atom_dict[record.seq[n]] = 1
-                    else:
-                        atom_dict[record.seq[n]] += 1
+                if consensus_ignore_mask_char and (record.seq[n] == mask_char):
+                    continue
+                if record.seq[n] not in atom_dict:
+                    atom_dict[record.seq[n]] = 1
+                else:
+                    atom_dict[record.seq[n]] += 1
 
-                    num_atoms += 1
+                num_atoms += 1
 
         max_atoms = []
         max_size = 0
@@ -175,16 +176,16 @@ def gap_consensus(summary_align, threshold=.7, input_ambiguous=None, output_ambi
                 max_atoms.append(atom)
 
         if require_multiple and num_atoms == 1:
-            consensus += output_ambiguous
+            consensus += consensus_ambiguous
         elif (len(max_atoms) == 1) and ((float(max_size) / float(num_atoms)) >= threshold):
             consensus += max_atoms[0]
         else:
-            consensus += output_ambiguous
+            consensus += consensus_ambiguous
 
     # we need to guess a consensus alphabet if one isn't specified
     if consensus_alpha is None:
         # noinspection PyProtectedMember
-        consensus_alpha = summary_align._guess_consensus_alphabet(output_ambiguous)
+        consensus_alpha = summary_align._guess_consensus_alphabet(consensus_ambiguous)
 
     return Seq(consensus, consensus_alpha)
 
@@ -256,7 +257,7 @@ def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complem
         return None
 
 
-def mask_seq_record(seq_rec, min_score, inplace=False):
+def mask_seq_record(seq_rec, min_score, mask_char="N", inplace=False):
     if not inplace:
         masked_seq_req = copy.deepcopy(seq_rec)
     else:
@@ -265,14 +266,14 @@ def mask_seq_record(seq_rec, min_score, inplace=False):
     base_list = list(masked_seq_req.seq)
     for loc in range(len(base_list)):
         if masked_seq_req.letter_annotations["phred_quality"][loc] < min_score:
-            base_list[loc] = 'N'
+            base_list[loc] = mask_char
 
     masked_seq_req.seq = Seq("".join(base_list), alphabet=IUPAC.ambiguous_dna)
 
     return masked_seq_req
 
 
-def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_base_score, basename,
+def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_base_score, basename, mask_char="N",
                               min_seq_score=None):
     for seq_rec in records:
         trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False)
@@ -284,7 +285,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
                 log.info("seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
                                                                                               basename, seq_rec.id))
                 continue
-            yield mask_seq_record(trimed_seq_rec, min_base_score, inplace=True)
+            yield mask_seq_record(trimed_seq_rec, min_base_score, mask_char=mask_char, inplace=True)
 
         # primers not found in forword direction
         else:
@@ -296,7 +297,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
                         "seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
                                                                                              basename, seq_rec.id))
                     continue
-                yield mask_seq_record(trimed_seq_rec, min_base_score, inplace=True)
+                yield mask_seq_record(trimed_seq_rec, min_base_score, mask_char=mask_char, inplace=True)
 
             # primers not found in either direction
             else:
@@ -305,9 +306,9 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
 
 
 def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1, max_len=None,
-                  aligner="muscle", sequence_max_n=None, alignment_max_n=None, max_len_delta=None,
+                  aligner="muscle", sequence_max_amb=None, alignment_max_amb=None, max_len_delta=None,
                   expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
-                  input_ambiguous=None, output_ambiguous="X"):
+                  mask_char=None, consensus_ambiguous="X", consensus_ignore_mask_char=False):
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -330,11 +331,11 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
         return
 
     # define filter functions
-    def n_count_filter(r, _sequence_max_n, _basename):
-        _n_count = r.seq.upper().count('N')
-        if _n_count > _sequence_max_n:
-            log.info("seq excluded - n_count:{} > sequence_max_n:{} - {} {}".format(_n_count, _sequence_max_n,
-                                                                                    _basename, r.id))
+    def mask_count_filter(r, _sequence_max_amb, _basename):
+        _n_count = r.seq.upper().count(mask_char)
+        if _n_count > _sequence_max_amb:
+            log.info("seq excluded - mask_count:{} > sequence_max_amb:{} - {} {}".format(_n_count, _sequence_max_amb,
+                                                                                         _basename, r.id))
             return False
         else:
             return True
@@ -348,14 +349,14 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
         else:
             return True
 
-    # apply n_count_filter
-    if sequence_max_n is not None:
-        clean_records = [r for r in clean_records if n_count_filter(r, sequence_max_n, basename)]
+    # apply mask_count_filter
+    if sequence_max_amb is not None:
+        clean_records = [r for r in clean_records if mask_count_filter(r, sequence_max_amb, basename)]
 
     if len(clean_records) < min_seqs:
         log.info(
-            "alignment excluded - seq_count:{} < min_seqs:{} after n_count_filter - {}".format(len(clean_records),
-                                                                                               min_seqs, basename))
+            "alignment excluded - seq_count:{} < min_seqs:{} after mask_count_filter - {}".format(len(clean_records),
+                                                                                                  min_seqs, basename))
         return
 
     # determin typical_len for len_variance_filter
@@ -385,8 +386,14 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
 
     # write clean fasta files
     with open(os.path.join(output_dir, basename) + ".fasta", "wt") as f:
-        for r in clean_records:
-            f.write(r.format("fasta"))
+        if len(clean_records) == 1:
+            r = clean_records[0]
+            mask_count = r.seq.upper().count(mask_char)
+            r.description = "seq_count:1 mask_count:{} seq:len:{}".format(mask_count, len(r.seq))
+            pass
+        else:
+            for r in clean_records:
+                f.write(r.format("fasta"))
 
     # align clean fasta
     if aligner == "muscle":
@@ -422,16 +429,17 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
     summary_align = AlignInfo.SummaryInfo(alignment)
 
     # write consensus fasta
-    consensus = gap_consensus(summary_align, threshold=consensus_threshold, input_ambiguous=input_ambiguous,
-                              output_ambiguous=output_ambiguous, consensus_alpha=IUPAC.ambiguous_dna,
-                              require_multiple=consensus_require_multiple)
-    n_count = consensus.upper().count('N')
-    if (alignment_max_n is not None) and (n_count > alignment_max_n):
+    consensus = gap_consensus(summary_align, threshold=consensus_threshold, mask_char=mask_char,
+                              consensus_ambiguous=consensus_ambiguous, consensus_alpha=IUPAC.ambiguous_dna,
+                              require_multiple=consensus_require_multiple,
+                              consensus_ignore_mask_char=consensus_ignore_mask_char)
+    amb_count = consensus.upper().count(mask_char)
+    if (alignment_max_amb is not None) and (amb_count > alignment_max_amb):
         log.info(
-            "alignment excluded - n_count:{} > alignment_max_n:{} - {}".format(n_count, sequence_max_n, basename))
+            "alignment excluded - amb_count:{} > alignment_max_amb:{} - {}".format(amb_count, sequence_max_amb, basename))
         return
     seq = Seq(data=str(consensus), alphabet=IUPAC.ambiguous_dna)
-    description = "seq_count:{} n_count:{} seq:len:{}".format(len(alignment), n_count, len(consensus))
+    description = "seq_count:{} amb_count:{} seq:len:{}".format(len(alignment), amb_count, len(consensus))
     # noinspection PyTypeChecker
     seq_rec = SeqRecord(seq=seq, id=basename.split("prime_")[0] + "prime", description=description)
     with open(os.path.join(output_dir, basename) + ".{}.consensus.fasta".format(len(alignment)), "wt") as f:
@@ -441,9 +449,9 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
 
 
 def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seqs=1,
-                      max_len=None, aligner="muscle", sequence_max_n=None, alignment_max_n=None, max_len_delta=None,
+                      max_len=None, aligner="muscle", sequence_max_amb=None, alignment_max_amb=None, max_len_delta=None,
                       expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
-                      input_ambiguous=None, output_ambiguous="X"):
+                      mask_char=None, consensus_ambiguous="X", consensus_ignore_mask_char=False):
     # create pool
     with mp.Pool(min(len(in_file_list), mp.cpu_count())) as p:
         p.starmap(process_fastq, zip(in_file_list,
@@ -454,14 +462,15 @@ def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score,
                                      itertools.repeat(min_seqs),
                                      itertools.repeat(max_len),
                                      itertools.repeat(aligner),
-                                     itertools.repeat(sequence_max_n),
-                                     itertools.repeat(alignment_max_n),
+                                     itertools.repeat(sequence_max_amb),
+                                     itertools.repeat(alignment_max_amb),
                                      itertools.repeat(max_len_delta),
                                      itertools.repeat(expected_length),
                                      itertools.repeat(consensus_threshold),
                                      itertools.repeat(consensus_require_multiple),
-                                     itertools.repeat(input_ambiguous),
-                                     itertools.repeat(output_ambiguous)
+                                     itertools.repeat(mask_char),
+                                     itertools.repeat(consensus_ambiguous),
+                                     itertools.repeat(consensus_ignore_mask_char)
                                      ))
 
 
@@ -482,11 +491,12 @@ def main(_args):
         log.info("Single file mode - {}".format(_args.in_file))
         process_fastq(_args.in_file, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
                       min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
-                      sequence_max_n=_args.sequence_max_n, alignment_max_n=_args.alignment_max_n,
+                      sequence_max_amb=_args.sequence_max_amb, alignment_max_amb=_args.alignment_max_amb,
                       max_len_delta=_args.max_len_delta, expected_length=_args.expected_length,
                       consensus_threshold=_args.consensus_threshold,
                       consensus_require_multiple=_args.consensus_require_multiple,
-                      input_ambiguous=_args.input_ambiguous, output_ambiguous=_args.output_ambiguous)
+                      mask_char=_args.mask_char, consensus_ambiguous=_args.consensus_ambiguous,
+                      consensus_ignore_mask_char=_args.consensus_ignore_mask_char)
     else:
         log.info("Batch mode - {}".format(_args.in_file_list))
         with open(_args.in_file_list, "r") as f:
@@ -494,11 +504,12 @@ def main(_args):
 
         process_file_list(in_file_list, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
                           min_seqs=_args.min_seqs, max_len=_args.max_len, aligner=_args.aligner,
-                          sequence_max_n=_args.sequence_max_n, alignment_max_n=_args.alignment_max_n,
+                          sequence_max_amb=_args.sequence_max_amb, alignment_max_amb=_args.alignment_max_amb,
                           max_len_delta=_args.max_len_delta, expected_length=_args.expected_length,
                           consensus_threshold=_args.consensus_threshold,
                           consensus_require_multiple=_args.consensus_require_multiple,
-                          input_ambiguous=_args.input_ambiguous, output_ambiguous=_args.output_ambiguous)
+                          mask_char=_args.mask_char, consensus_ambiguous=_args.consensus_ambiguous,
+                          consensus_ignore_mask_char=_args.consensus_ignore_mask_char)
 
 
 if __name__ == "__main__":
@@ -516,6 +527,7 @@ if __name__ == "__main__":
 
     # settings/options
     parser.add_argument('-l', '--aligner', help='the alignment software to use. {clustalw, muscle}', default="muscle")
+    parser.add_argument('--mask_char', help='char used to mask bases with quality below threshold', default="N")
 
     # files/directories
     parser.add_argument('-i', '--in_file', help='path to input file',
@@ -538,8 +550,8 @@ if __name__ == "__main__":
     # sequence filters
     parser.add_argument('-e', '--primer_mismatch', type=int, help='number of errors allowed in primer match',
                         default="2")
-    parser.add_argument('-p', '--sequence_max_n', type=int, help='number of Ns allowed in sequences to be aligned',
-                        default="5")
+    parser.add_argument('-p', '--sequence_max_amb', type=int,
+                        help='number of mask_char allowed in sequences to be aligned', default="5")
     parser.add_argument('-d', '--max_len_delta', type=int, help='allowed variation from mode of sequence length',
                         default="5")
     # optional sequence filters
@@ -551,16 +563,17 @@ if __name__ == "__main__":
     # alignment filters
     parser.add_argument('-s', '--min_seqs', type=int, help='min count of sequences before alignment excluded',
                         default="5")
-    parser.add_argument('-t', '--alignment_max_n', type=int, help='number of Ns allowed in final aligned sequences',
-                        default="5")
+    parser.add_argument('-t', '--alignment_max_amb', type=int,
+                        help='number of consensus_ambiguous allowed in final consensus sequences', default="5")
 
     # consensus options
     parser.add_argument('--consensus_threshold', type=float, help='proportion threshold for consensus to call a base.',
                         default=".7")
     parser.add_argument('--consensus_require_multiple', help='require multiple instanses for consensus to call a base',
                         action='store_true')
-    parser.add_argument('--input_ambiguous', help='input dir of files named in in_file_list', default=None)
-    parser.add_argument('--output_ambiguous', help='input dir of files named in in_file_list', default="N")
+    parser.add_argument('--consensus_ambiguous', help='char representing bases under consensus threshold', default="n")
+    parser.add_argument('--consensus_ignore_mask_char', help='discount mask char when calculating consensus',
+                        action='store_true')
 
     args = parser.parse_args()
 
