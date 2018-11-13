@@ -26,9 +26,10 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 
-# logging configuration
-# noinspection PyMissingOrEmptyDocstring
 class OneLineExceptionFormatter(logging.Formatter):
+    """custom logging configuration for exceptions to
+    format on a single line, but with <newline> markers
+    for easy reformating in a text editor"""
     def formatException(self, exc_info):
         result = super().formatException(exc_info)
         return repr(result)
@@ -58,7 +59,8 @@ log = logging.getLogger("ccs-consensuser.py")
 # trim_adaptor_w_qual
 
 def _remove_adaptor(seq, region, right_side=True):
-    """Remove an adaptor region and all sequence to the right or left.
+    """This function adapted from https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py
+    Remove an adaptor region and all sequence to the right or left.
     """
     if right_side:
         try:
@@ -391,7 +393,7 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
         if len(clean_records) == 1:
             r = clean_records[0]
             mask_count = r.seq.upper().count(mask_char)
-            r.description = "seq_count:1 mask_count:{} seq:len:{}".format(mask_count, len(r.seq))
+            r.description = "seq_count:1 mask_count:{} seq_len:{}".format(mask_count, len(r.seq))
             pass
         else:
             for r in clean_records:
@@ -518,9 +520,8 @@ def main(_args):
 
 if __name__ == "__main__":
 
-    # argparse configuration
-    # noinspection PyMissingOrEmptyDocstring
     class MyParser(argparse.ArgumentParser):
+        """custom argparse configuration"""
         def error(self, message):
             sys.stderr.write('error: %s\n' % message)
             self.print_help()
