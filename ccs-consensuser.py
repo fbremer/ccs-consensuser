@@ -6,12 +6,13 @@ If running as a script, run with the -h flag for usage documentation.
 
 import argparse
 import copy
-import itertools
 import logging
 import multiprocessing as mp
 import os
+import re
 import statistics
 import sys
+from glob import glob
 
 import Bio
 import numpy as np
@@ -26,10 +27,13 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 
+# logging ##############################################################################################################
+
 class OneLineExceptionFormatter(logging.Formatter):
     """custom logging configuration for exceptions to
     format on a single line, but with <newline> markers
-    for easy reformating in a text editor"""
+    for easy reformatting in a text editor"""
+
     def formatException(self, exc_info):
         result = super().formatException(exc_info)
         return repr(result)
@@ -47,16 +51,14 @@ handler = logging.StreamHandler()
 formatter = OneLineExceptionFormatter(logging.BASIC_FORMAT)
 handler.setFormatter(formatter)
 root = logging.getLogger()
-root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 root.addHandler(handler)
 
+root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 log = logging.getLogger("ccs-consensuser.py")
 
 
-# some functions from: https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py
-# _remove_adaptor
-# trim_adaptor
-# trim_adaptor_w_qual
+# external helper functions used with permission #######################################################################
+# from: https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py under the MIT license
 
 def _remove_adaptor(seq, region, right_side=True):
     """This function adapted from https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py
@@ -129,6 +131,12 @@ def trim_adaptor_w_qual(seq, qual, adaptor, primer_mismatch, right_side=True):
     return tseq, tqual
 
 
+# modified summary_align.gap_consensus() ###############################################################################
+"""Modified such that if consensus_ignore_mask_char flag is set, the sequence with mask_char is ignored in residue 
+calculations at the masked position
+"""
+
+
 def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguous_char="X",
                   consensus_alpha=None, require_multiple=False, consensus_ignore_mask_char=False):
     """Output a fast consensus sequence of the alignment, allowing gaps.
@@ -192,33 +200,35 @@ def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguou
     return Seq(consensus, consensus_alpha)
 
 
-def create_unique_dir(path, limit=99):
-    """Return a path to an empty directory. Either the dir at path, or a dir of the form 'path + _01'
-    :param path: The initial path to use
-    :param limit: The maximum number of directory variations this function will attempt to create.
-    :return: A path to an empty directory.
-    """
-    width = len(str(limit))
-    original = path.rstrip(os.sep)
-    if len(os.listdir(original)) == 0:
-        log.info("Using output directory - {}".format(path))
-        return original  # folder empty, let's use it
-    count = 1
-    while count < limit:
-        try:
-            os.mkdir(path)
-            log.info("Creating output directory - {}".format(path))
-            return path
-        except OSError as path_error:
-            if path_error.errno == 17:  # file exists
-                path = "{0}_{1:0>{2}}".format(original, count, width)
-                count += 1
-            else:
-                raise
-    else:
-        msg = "could not uniquely create directory {0}: limit `{1}` reached"
-        raise Exception(msg.format(original, limit))
+# helper functions #####################################################################################################
 
+def get_unique_dir(path, width=3):
+    # if it doesn't exist, create
+    if not os.path.isdir(path):
+        log.debug("Creating new directory - {}".format(path))
+        os.makedirs(path)
+        return path
+
+    # if it's empty, use
+    if not os.listdir(path):
+        log.debug("Using empty directory - {}".format(path))
+        return path
+
+    # otherwise, increment the highest number folder in the series
+
+    def get_trailing_number(search_text):
+        serch_obj = re.search(r"([0-9]+)$", search_text)
+        if not serch_obj:
+            return 0
+        else:
+            return int(serch_obj.group(1))
+
+    dirs = glob(path + "*")
+    next_num = sorted([get_trailing_number(d) for d in dirs])[-1] + 1
+    new_path = "{0}_{1:0>{2}}".format(path, next_num, width)
+    os.makedirs(new_path)
+
+    return new_path
 
 def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
     if reverse_complement:
@@ -305,6 +315,41 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
             else:
                 log.info("seq excluded - primers not found - {} {}".format(basename, seq_rec.id))
                 continue
+
+
+# core logic ###########################################################################################################
+
+def param_dict_generator(args):
+    output_dir = get_unique_dir(args.out_dir)
+
+    if args.in_file_list is None:
+        in_file_list = [args.in_file]
+    else:
+        with open(args.in_file_list, "r") as f:
+            in_file_list = [os.path.join(args.in_dir, l.strip()) for l in f.readlines()]
+
+    for fn in in_file_list:
+        yield {"input_fn": fn,
+               "output_dir": output_dir,
+               "primer_mismatch": args.primer_mismatch,
+               "min_base_score": args.min_base_score,
+               "min_seq_score": args.min_seq_score,
+               "min_seq_count": args.min_seq_count,
+               "max_len": args.max_len,
+               "aligner": args.aligner,
+               "sequence_max_mask": args.sequence_max_mask,
+               "alignment_max_amb": args.alignment_max_amb,
+               "max_len_delta": args.max_len_delta,
+               "expected_length": args.expected_length,
+               "consensus_threshold": args.consensus_threshold,
+               "consensus_require_multiple": args.consensus_require_multiple,
+               "mask_char": args.mask_char,
+               "consensus_ambiguous_char": args.consensus_ambiguous_char,
+               "consensus_ignore_mask_char": args.consensus_ignore_mask_char}
+
+
+def spawn(param_dict):
+    process_fastq(**param_dict)
 
 
 def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seq_count=1,
@@ -453,82 +498,20 @@ def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq
         f.write(fasta_entry)
 
 
-def process_file_list(in_file_list, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seq_count=1,
-                      max_len=None, aligner="muscle", sequence_max_mask=None, alignment_max_amb=None,
-                      max_len_delta=None,
-                      expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
-                      mask_char="N", consensus_ambiguous_char="X", consensus_ignore_mask_char=False):
-    # create pool
-    with mp.Pool(min(len(in_file_list), mp.cpu_count())) as p:
-        p.starmap(process_fastq, zip(in_file_list,
-                                     itertools.repeat(output_dir),
-                                     itertools.repeat(primer_mismatch),
-                                     itertools.repeat(min_base_score),
-                                     itertools.repeat(min_seq_score),
-                                     itertools.repeat(min_seq_count),
-                                     itertools.repeat(max_len),
-                                     itertools.repeat(aligner),
-                                     itertools.repeat(sequence_max_mask),
-                                     itertools.repeat(alignment_max_amb),
-                                     itertools.repeat(max_len_delta),
-                                     itertools.repeat(expected_length),
-                                     itertools.repeat(consensus_threshold),
-                                     itertools.repeat(consensus_require_multiple),
-                                     itertools.repeat(mask_char),
-                                     itertools.repeat(consensus_ambiguous_char),
-                                     itertools.repeat(consensus_ignore_mask_char)
-                                     ))
+# cli and multiprocessing ##############################################################################################
+
+class HelpAndQuitOnFailParser(argparse.ArgumentParser):
+    """custom argparse configuration
+    if error parsing, prints help and exits"""
+
+    def error(self, message):
+        sys.stderr.write('error: {}\n'.format(message))
+        self.print_help()
+        sys.exit(2)
 
 
-def main(_args):
-    # if output_path does not exist, create it
-    output_dir = _args.out_dir
-    if not os.path.isdir(output_dir):
-        log.info("Creating output directory - {}".format(output_dir))
-        os.makedirs(output_dir)
-    # if overwrite is set and dir exists, just use it
-    elif not _args.overwrite:
-        # If dir exists, and is empty, use it.
-        # If overwrite is not set, dir exists, and dir is not empty, create and use new unique directory
-        output_dir = create_unique_dir(output_dir)
-
-    # call function based on batch or single mode
-    if _args.in_file_list is None:
-        log.info("Single file mode - {}".format(_args.in_file))
-        process_fastq(_args.in_file, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
-                      min_seq_count=_args.min_seq_count, max_len=_args.max_len, aligner=_args.aligner,
-                      sequence_max_mask=_args.sequence_max_mask, alignment_max_amb=_args.alignment_max_amb,
-                      max_len_delta=_args.max_len_delta, expected_length=_args.expected_length,
-                      consensus_threshold=_args.consensus_threshold,
-                      consensus_require_multiple=_args.consensus_require_multiple,
-                      mask_char=_args.mask_char, consensus_ambiguous_char=_args.consensus_ambiguous_char,
-                      consensus_ignore_mask_char=_args.consensus_ignore_mask_char)
-    else:
-        log.info("Batch mode - {}".format(_args.in_file_list))
-        with open(_args.in_file_list, "r") as f:
-            in_file_list = [os.path.join(_args.in_dir, l.strip()) for l in f.readlines()]
-
-        process_file_list(in_file_list, output_dir, _args.primer_mismatch, _args.min_base_score, _args.min_seq_score,
-                          min_seq_count=_args.min_seq_count, max_len=_args.max_len, aligner=_args.aligner,
-                          sequence_max_mask=_args.sequence_max_mask, alignment_max_amb=_args.alignment_max_amb,
-                          max_len_delta=_args.max_len_delta, expected_length=_args.expected_length,
-                          consensus_threshold=_args.consensus_threshold,
-                          consensus_require_multiple=_args.consensus_require_multiple,
-                          mask_char=_args.mask_char, consensus_ambiguous_char=_args.consensus_ambiguous_char,
-                          consensus_ignore_mask_char=_args.consensus_ignore_mask_char)
-
-
-if __name__ == "__main__":
-
-    class MyParser(argparse.ArgumentParser):
-        """custom argparse configuration"""
-        def error(self, message):
-            sys.stderr.write('error: %s\n' % message)
-            self.print_help()
-            sys.exit(2)
-
-
-    parser = MyParser()
+def main():
+    parser = HelpAndQuitOnFailParser()
 
     # settings/options
     parser.add_argument('-l', '--aligner', help='the alignment software to use. {clustalw, muscle}', default="muscle")
@@ -543,10 +526,9 @@ if __name__ == "__main__":
                                  'TGATTYTTTGGACACCCAGAAGTTTACTACGATGTGATGCTTGCACAAGTGATCCA.'
                                  'fastq'))
     parser.add_argument('-o', '--out_dir', help='path to output dir', default="output")
-    parser.add_argument('--overwrite', help='set this flag to disable creating new out dir', action='store_true')
 
     # batch mode filelist settings
-    parser.add_argument('--in_file_list', help='path to text file w/ an in_file filename on each line', default=None)
+    parser.add_argument('--in_file_list', help='path to text file w/ an in_file filename on each line', default="")
     parser.add_argument('--in_dir', help='input dir of files named in in_file_list', default=None)
 
     # base filters
@@ -583,9 +565,17 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    processor_count = min(len(args.sample_names), mp.cpu_count())
+    with mp.Pool(processor_count) as p:
+        data = p.map(spawn, param_dict_generator(args))
+
+    print(data)
+
+
+if __name__ == "__main__":
     # run main
     try:
-        exit(main(args))
+        exit(main())
     except Exception as e:
         log.exception("Exception in main(): {}".format(e))
         exit(1)
