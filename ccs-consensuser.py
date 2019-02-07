@@ -57,40 +57,8 @@ root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 log = logging.getLogger("ccs-consensuser.py")
 
 
-# directory management #################################################################################################
-
-def get_unique_dir(path, width=3):
-    # if it doesn't exist, create
-    if not os.path.isdir(path):
-        log.debug("Creating new directory - {}".format(path))
-        os.makedirs(path)
-        return path
-
-    # if it's empty, use
-    if not os.listdir(path):
-        log.debug("Using empty directory - {}".format(path))
-        return path
-
-    # otherwise, increment the highest number folder in the series
-
-    def get_trailing_number(search_text):
-        serch_obj = re.search(r"([0-9]+)$", search_text)
-        if not serch_obj:
-            return 0
-        else:
-            return int(serch_obj.group(1))
-
-    dirs = glob(path + "*")
-    next_num = sorted([get_trailing_number(d) for d in dirs])[-1] + 1
-    new_path = "{0}_{1:0>{2}}".format(path, next_num, width)
-    os.makedirs(new_path)
-
-    return new_path
-
-
 # external helper functions used with permission #######################################################################
 # from: https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py under the MIT license
-
 
 def _remove_adaptor(seq, region, right_side=True):
     """This function adapted from https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py
@@ -233,6 +201,34 @@ def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguou
 
 
 # helper functions #####################################################################################################
+
+def get_unique_dir(path, width=3):
+    # if it doesn't exist, create
+    if not os.path.isdir(path):
+        log.debug("Creating new directory - {}".format(path))
+        os.makedirs(path)
+        return path
+
+    # if it's empty, use
+    if not os.listdir(path):
+        log.debug("Using empty directory - {}".format(path))
+        return path
+
+    # otherwise, increment the highest number folder in the series
+
+    def get_trailing_number(search_text):
+        serch_obj = re.search(r"([0-9]+)$", search_text)
+        if not serch_obj:
+            return 0
+        else:
+            return int(serch_obj.group(1))
+
+    dirs = glob(path + "*")
+    next_num = sorted([get_trailing_number(d) for d in dirs])[-1] + 1
+    new_path = "{0}_{1:0>{2}}".format(path, next_num, width)
+    os.makedirs(new_path)
+
+    return new_path
 
 def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
     if reverse_complement:
