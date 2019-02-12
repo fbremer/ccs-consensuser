@@ -226,9 +226,11 @@ def get_unique_dir(path, width=3):
     dirs = glob(path + "*")
     next_num = sorted([get_trailing_number(d) for d in dirs])[-1] + 1
     new_path = "{0}_{1:0>{2}}".format(path, next_num, width)
-    os.makedirs(new_path)
 
+    log.debug("Creating new incremented directory - {}".format(new_path))
+    os.makedirs(new_path)
     return new_path
+
 
 def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
     if reverse_complement:
@@ -329,33 +331,55 @@ def param_dict_generator(args):
             in_file_list = [os.path.join(args.in_dir, l.strip()) for l in f.readlines()]
 
     for fn in in_file_list:
-        yield {"input_fn": fn,
-               "output_dir": output_dir,
-               "primer_mismatch": args.primer_mismatch,
-               "min_base_score": args.min_base_score,
-               "min_seq_score": args.min_seq_score,
-               "min_seq_count": args.min_seq_count,
-               "max_len": args.max_len,
-               "aligner": args.aligner,
-               "sequence_max_mask": args.sequence_max_mask,
-               "alignment_max_amb": args.alignment_max_amb,
-               "max_len_delta": args.max_len_delta,
-               "expected_length": args.expected_length,
-               "consensus_threshold": args.consensus_threshold,
-               "consensus_require_multiple": args.consensus_require_multiple,
-               "mask_char": args.mask_char,
-               "consensus_ambiguous_char": args.consensus_ambiguous_char,
-               "consensus_ignore_mask_char": args.consensus_ignore_mask_char}
+        yield {
+            # files/directories
+            "input_fn": fn,
+            "output_dir": output_dir,
+            # settings/options
+            "aligner": args.aligner,
+            "mask_char": args.mask_char,
+            # base filters
+            "min_base_score": args.min_base_score,
+            # sequence filters
+            "primer_mismatch": args.primer_mismatch,
+            "sequence_max_mask": args.sequence_max_mask,
+            "max_len_delta": args.max_len_delta,
+            # optional sequence filters
+            "expected_length": args.expected_length,
+            "max_len": args.max_len,
+            "min_seq_score": args.min_seq_score,
+            # alignment filters
+            "min_seq_count": args.min_seq_count,
+            "alignment_max_amb": args.alignment_max_amb,
+            # consensus options
+            "consensus_threshold": args.consensus_threshold,
+            "consensus_require_multiple": args.consensus_require_multiple,
+            "consensus_ambiguous_char": args.consensus_ambiguous_char,
+            "consensus_ignore_mask_char": args.consensus_ignore_mask_char}
 
 
 def spawn(param_dict):
     process_fastq(**param_dict)
 
 
-def process_fastq(input_fn, output_dir, primer_mismatch, min_base_score, min_seq_score=None, min_seq_count=1,
-                  max_len=None, aligner="muscle", sequence_max_mask=None, alignment_max_amb=None, max_len_delta=None,
-                  expected_length=None, consensus_threshold=0.7, consensus_require_multiple=False,
-                  mask_char="N", consensus_ambiguous_char="X", consensus_ignore_mask_char=False):
+def process_fastq(input_fn,
+                  output_dir,
+                  aligner="muscle",
+                  mask_char="N",
+                  min_base_score=60,
+                  primer_mismatch=2,
+                  sequence_max_mask=None,
+                  max_len_delta=None,
+                  expected_length=None,
+                  max_len=None,
+                  min_seq_score=None,
+                  min_seq_count=1,
+                  alignment_max_amb=None,
+                  consensus_threshold=0.7,
+                  consensus_require_multiple=False,
+                  consensus_ambiguous_char="X",
+                  consensus_ignore_mask_char=False):
+
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -513,55 +537,76 @@ class HelpAndQuitOnFailParser(argparse.ArgumentParser):
 def main():
     parser = HelpAndQuitOnFailParser()
 
-    # settings/options
-    parser.add_argument('-l', '--aligner', help='the alignment software to use. {clustalw, muscle}', default="muscle")
-    parser.add_argument('--mask_char', help='char used to mask bases with quality below threshold', default="N")
-
     # files/directories
-    parser.add_argument('-i', '--in_file', help='path to input file',
+    parser.add_argument('-i', '--in_file',
                         default=('Final.HQpolish99nomaxmin600.ccs.BX140414_001.5prime_'
                                  'CACAGAGACACGCACA.'
                                  'CGTCTCTATCTCTCTA.'
                                  'GCAGTCGAACATGTAGCTGACTCAGGTCACTCGCCTAAACTTCAGCCATT.'
                                  'TGATTYTTTGGACACCCAGAAGTTTACTACGATGTGATGCTTGCACAAGTGATCCA.'
-                                 'fastq'))
-    parser.add_argument('-o', '--out_dir', help='path to output dir', default="output")
+                                 'fastq'),
+                        help='path to input file')
+
+    parser.add_argument('-o', '--out_dir', default="output",
+                        help='path to output dir')
 
     # batch mode filelist settings
-    parser.add_argument('--in_file_list', help='path to text file w/ an in_file filename on each line', default="")
-    parser.add_argument('--in_dir', help='input dir of files named in in_file_list', default=None)
+    parser.add_argument('--in_file_list', default="",
+                        help='path to text file w/ an in_file filename on each line')
+
+    parser.add_argument('--in_dir', default=None,
+                        help='input dir of files named in in_file_list')
+
+    # settings/options
+    parser.add_argument('-l', '--aligner', default="muscle",
+                        help='the alignment software to use. {clustalw, muscle}')
+
+    parser.add_argument('--mask_char', default="N",
+                        help='char used to mask bases with quality below threshold')
 
     # base filters
-    parser.add_argument('-n', '--min_base_score', type=int, help='score below which a nuc is masked', default="60")
+    parser.add_argument('-n', '--min_base_score', type=int, default="60",
+                        help='score below which a nuc is masked')
 
     # sequence filters
-    parser.add_argument('-e', '--primer_mismatch', type=int, help='number of errors allowed in primer match',
-                        default="2")
-    parser.add_argument('-p', '--sequence_max_mask', type=int,
-                        help='number of mask_char allowed in sequences to be aligned', default="5")
-    parser.add_argument('-d', '--max_len_delta', type=int, help='allowed variation from mode of sequence length',
-                        default="5")
+    parser.add_argument('-e', '--primer_mismatch', type=int, default="2",
+                        help='number of errors allowed in primer match')
+
+    parser.add_argument('-p', '--sequence_max_mask', type=int, default="5",
+                        help='number of mask_char allowed in sequences to be aligned')
+
+    parser.add_argument('-d', '--max_len_delta', type=int, default="5",
+                        help='allowed variation from mode of sequence length')
+
     # optional sequence filters
-    parser.add_argument('--expected_length', type=int, help='optional, replaces average in max_len_delta filter',
-                        default=None)
-    parser.add_argument('--max_len', type=int, help='max length overwhich a seq is excluded', default=None)
-    parser.add_argument('--min_seq_score', type=int, help='avg score below which a seq is excluded', default=None)
+    parser.add_argument('--expected_length', type=int, default=None,
+                        help='optional, replaces average in max_len_delta filter')
+
+    parser.add_argument('--max_len', type=int, default=None,
+                        help='max length overwhich a seq is excluded')
+
+    parser.add_argument('--min_seq_score', type=int, default=None,
+                        help='avg score below which a seq is excluded')
 
     # alignment filters
-    parser.add_argument('-s', '--min_seq_count', type=int, help='min count of sequences before alignment excluded',
-                        default="5")
-    parser.add_argument('-t', '--alignment_max_amb', type=int,
-                        help='number of consensus_ambiguous_char allowed in final consensus sequences', default="5")
+    parser.add_argument('-s', '--min_seq_count', type=int, default="5",
+                        help='min count of sequences before alignment excluded')
+
+    parser.add_argument('-t', '--alignment_max_amb', type=int, default="5",
+                        help='number of consensus_ambiguous_char allowed in final consensus sequences')
 
     # consensus options
-    parser.add_argument('--consensus_threshold', type=float, help='proportion threshold for consensus to call a base.',
-                        default=".7")
-    parser.add_argument('--consensus_require_multiple', help='require multiple instanses for consensus to call a base',
-                        action='store_true')
-    parser.add_argument('--consensus_ambiguous_char', help='char representing bases under consensus threshold',
-                        default="n")
-    parser.add_argument('--consensus_ignore_mask_char', help='discount mask char when calculating consensus',
-                        action='store_true')
+    parser.add_argument('--consensus_threshold', type=float, default=".7",
+                        help='proportion threshold for consensus to call a base.')
+
+    parser.add_argument('--consensus_require_multiple', action='store_true',
+                        help='require multiple instanses for consensus to call a base')
+
+    parser.add_argument('--consensus_ambiguous_char', default="n",
+                        help='char representing bases under consensus threshold')
+
+    parser.add_argument('--consensus_ignore_mask_char', action='store_true',
+                        help='discount mask char when calculating consensus')
 
     args = parser.parse_args()
 
