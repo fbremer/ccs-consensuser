@@ -1,4 +1,4 @@
-name: ccs-consensuser
+name: ccs-consensuser-test
 channels:
 - r
 - defaults
@@ -8,6 +8,8 @@ dependencies:
 - python=3
 - anaconda
 - biopython
+- bamtools
+- pysam
 - numpy
 - muscle
 - clustalw

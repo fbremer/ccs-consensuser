@@ -7,7 +7,7 @@ If running as a script, run with the -h flag for usage documentation.
 import argparse
 import copy
 import logging
-import multiprocessing as mp
+import multiprocessing
 import os
 import re
 import statistics
@@ -15,7 +15,8 @@ import sys
 from glob import glob
 
 import Bio
-import numpy as np
+import numpy
+import pysam
 from Bio import AlignIO
 from Bio import SeqIO
 from Bio import pairwise2
@@ -23,6 +24,7 @@ from Bio.Align import AlignInfo
 from Bio.Align.Applications import ClustalwCommandline
 from Bio.Align.Applications import MuscleCommandline
 from Bio.Alphabet import IUPAC
+from Bio.Alphabet import single_letter_alphabet
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
@@ -112,7 +114,8 @@ def trim_adaptor(seq, adaptor, primer_mismatch, right_side=True):
         return seq
     # remove the adaptor sequence and return the result
     else:
-        return _remove_adaptor(seq, seq_region.replace(gap_char, ""),
+        return _remove_adaptor(seq,
+                               seq_region.replace(gap_char, ""),
                                right_side)
 
 
@@ -132,6 +135,15 @@ def trim_adaptor_w_qual(seq, qual, adaptor, primer_mismatch, right_side=True):
 
 
 # modified summary_align.gap_consensus() ###############################################################################
+
+# Copyright 2000 Brad Chapman.  All rights reserved.
+#
+# This file is part of the Biopython distribution and governed by your
+# choice of the "Biopython License Agreement" or the "BSD 3-Clause License".
+# Please see the LICENSE file that should have been included as part of this
+# package.
+
+# https://github.com/biopython/biopython/blob/master/LICENSE.rst
 """Modified such that if consensus_ignore_mask_char flag is set, the sequence with mask_char is ignored in residue 
 calculations at the masked position
 """
@@ -232,6 +244,65 @@ def get_unique_dir(path, width=3):
     return new_path
 
 
+def bam_recs(fn, bc_whitelist=None, return_dict=False):
+    assert os.path.isfile(fn)
+
+    samobj = pysam.AlignmentFile(fn, "rb", check_sq=False)
+    rec_itr = samobj.fetch(until_eof=True)
+
+    for rec in rec_itr:
+        bc = str(sorted([int(i) for i in rec.get_tag("bc").tolist()]))
+        if bc_whitelist and bc not in bc_whitelist:
+            continue
+
+        rec_id = rec.query_name
+        length = rec.query_length
+        rq = rec.get_tag("rq")
+        np = rec.get_tag("np")
+
+        if return_dict:
+            yield {"rec_id": rec_id,
+                   "length": length,
+                   "np": np,
+                   "rq": rq,
+                   "bc": bc,
+                   "sequence": rec.query_sequence,
+                   "quality": quality_string_map(rec.query_qualities.tolist())}
+
+        else:
+            descr = "{} len:{} np:{} rq:{} bc:{}".format(rec_id, length, np, rq, bc)
+            record = SeqRecord(Seq(rec.query_sequence, single_letter_alphabet),
+                               id=rec_id, name=rec_id, description=descr)
+            record.letter_annotations["phred_quality"] = rec.query_qualities.tolist()
+            yield record
+
+
+def quality_string_map(qualities, qual_str_to_list=False):
+    """By default, this function takes a list of quality score integers
+    and returns a phred quality string. If qual_str_to_list is set to True,
+    it will convert in the oppisite direction.
+    """
+    # precompute dictionaries on first run
+    if ("int_to_char" not in quality_string_map.__dict__
+            and "char_to_int" not in quality_string_map.__dict__):
+        offset = ord("!")  # 33, ! will have q of 0
+        quality_string_map.int_to_char = dict()
+        quality_string_map.char_to_int = dict()
+
+        for q in range(0, 94):
+            char = chr(q + offset)
+            quality_string_map.int_to_char[q] = char
+            quality_string_map.char_to_int[char] = q
+
+    if qual_str_to_list:
+        char_to_int = quality_string_map.char_to_int
+        return [char_to_int[q] for q in qualities]
+
+    # qual_list_to_str (default)
+    int_to_char = quality_string_map.int_to_char
+    return "".join([int_to_char[q] for q in qualities])
+
+
 def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
     if reverse_complement:
         rc = seq_rec.reverse_complement()
@@ -294,7 +365,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
 
         # primers found in forword direction
         if trimed_seq_rec is not None:
-            avg_score = np.mean(trimed_seq_rec.letter_annotations["phred_quality"])
+            avg_score = numpy.mean(trimed_seq_rec.letter_annotations["phred_quality"])
             if min_seq_score and (avg_score < min_seq_score):
                 log.info("seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
                                                                                               basename, seq_rec.id))
@@ -305,7 +376,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
         else:
             trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=True)
             if trimed_seq_rec is not None:  # primers found in reverse direction
-                avg_score = np.mean(trimed_seq_rec.letter_annotations["phred_quality"])
+                avg_score = numpy.mean(trimed_seq_rec.letter_annotations["phred_quality"])
                 if min_seq_score and (avg_score < min_seq_score):
                     log.info(
                         "seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
@@ -379,7 +450,6 @@ def process_fastq(input_fn,
                   consensus_require_multiple=False,
                   consensus_ambiguous_char="X",
                   consensus_ignore_mask_char=False):
-
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
     # noinspection PyTypeChecker
@@ -610,8 +680,8 @@ def main():
 
     args = parser.parse_args()
 
-    processor_count = min(len(args.sample_names), mp.cpu_count())
-    with mp.Pool(processor_count) as p:
+    processor_count = min(len(args.sample_names), multiprocessing.cpu_count())
+    with multiprocessing.Pool(processor_count) as p:
         data = p.map(spawn, param_dict_generator(args))
 
     print(data)
