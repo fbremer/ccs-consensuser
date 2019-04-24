@@ -41,7 +41,8 @@ ccs-consensuser.py \
  ----------------
 
  ## help
-
+ 
+```
  usage: ccs-consensuser.py [-h] [-l ALIGNER] [--mask_char MASK_CHAR]
                           [-i IN_FILE] [-o OUT_DIR] [--overwrite]
                           [--in_file_list IN_FILE_LIST] [--in_dir IN_DIR]
@@ -96,3 +97,4 @@ optional arguments:
                         char representing bases under consensus threshold
   --consensus_ignore_mask_char
                         discount mask char when calculating consensus
+```
