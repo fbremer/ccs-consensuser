@@ -244,7 +244,7 @@ def get_unique_dir(path, width=3):
     return new_path
 
 
-def bam_recs(fn, bc_whitelist=None, return_dict=False):
+def read_bam(fn, bc_whitelist=None, return_dict=False):
     assert os.path.isfile(fn)
 
     samobj = pysam.AlignmentFile(fn, "rb", check_sq=False)
