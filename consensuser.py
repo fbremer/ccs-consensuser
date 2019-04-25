@@ -12,6 +12,7 @@ import os
 import re
 import statistics
 import sys
+import time
 from glob import glob
 
 import Bio
@@ -309,6 +310,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
 
 def param_dict_generator(args):
     output_dir = get_unique_dir(args.out_dir)
+    time.sleep(15)
 
     if args.in_file_list is None:
         in_file_list = [args.in_file]
