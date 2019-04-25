@@ -28,6 +28,9 @@ from Bio.Alphabet import single_letter_alphabet
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
+from cutadapt.adapters import LinkedAdapter
+from cutadapt.seqio import Sequence
+
 
 # logging ##############################################################################################################
 
@@ -303,7 +306,7 @@ def quality_string_map(qualities, qual_str_to_list=False):
     return "".join([int_to_char[q] for q in qualities])
 
 
-def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
+def trim_both_ends_old(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
     if reverse_complement:
         rc = seq_rec.reverse_complement()
         un_trimed_seq = rc.seq
@@ -337,6 +340,34 @@ def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complem
         del trimed_seq_rec.letter_annotations["phred_quality"]
         trimed_seq_rec.seq = full_trimed_seq
         trimed_seq_rec.letter_annotations["phred_quality"] = full_trimed_qual
+        return trimed_seq_rec
+    else:
+        return None
+
+
+def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
+    # primer_b = str(Seq(primer_b).reverse_complement())
+    if reverse_complement:
+        rc = seq_rec.reverse_complement()
+        un_trimed_seq = str(rc.seq)
+        un_trimed_qual = quality_string_map(rc.letter_annotations["phred_quality"])
+    else:
+        un_trimed_seq = str(seq_rec.seq)
+        un_trimed_qual = quality_string_map(seq_rec.letter_annotations["phred_quality"])
+
+    adapter = LinkedAdapter(primer_a, primer_b,
+                            front_restriction=None,
+                            back_restriction=None,
+                            require_both=True)
+    sequence = Sequence(seq_rec.id, un_trimed_seq, un_trimed_qual)
+    match = adapter.match_to(sequence)
+
+    if match:
+        trimed_seq_rec = copy.deepcopy(seq_rec)
+        del trimed_seq_rec.letter_annotations["phred_quality"]
+        trimed_seq_rec.seq = match.trimmed().sequence
+        trimed_seq_rec.letter_annotations["phred_quality"] = quality_string_map(match.trimmed().qualities,
+                                                                                qual_str_to_list=True)
         return trimed_seq_rec
     else:
         return None
@@ -609,19 +640,18 @@ def main():
 
     # files/directories
     parser.add_argument('-i', '--in_file',
-                        default=('Final.HQpolish99nomaxmin600.ccs.BX140414_001.5prime_'
-                                 'CACAGAGACACGCACA.'
-                                 'CGTCTCTATCTCTCTA.'
-                                 'GCAGTCGAACATGTAGCTGACTCAGGTCACTCGCCTAAACTTCAGCCATT.'
-                                 'TGATTYTTTGGACACCCAGAAGTTTACTACGATGTGATGCTTGCACAAGTGATCCA.'
-                                 'fastq'),
+                        default=('all.ccs.3347.COI_ATAGCGACGCGATATA'
+                                 '.AGCGTCTCGCATCATG'
+                                 '.TYTCAACDAAYCAYAAAGATATTGA'
+                                 '.TAATATGGCAGATTAGTGCAATGGA'
+                                 '.fastq'),
                         help='path to input file')
 
     parser.add_argument('-o', '--out_dir', default="output",
                         help='path to output dir')
 
     # batch mode filelist settings
-    parser.add_argument('--in_file_list', default="",
+    parser.add_argument('--in_file_list', default=None,
                         help='path to text file w/ an in_file filename on each line')
 
     parser.add_argument('--in_dir', default=None,
@@ -680,7 +710,11 @@ def main():
 
     args = parser.parse_args()
 
-    processor_count = min(len(args.sample_names), multiprocessing.cpu_count())
+    if args.in_file_list:
+        processor_count = min(len(args.in_file_list), multiprocessing.cpu_count())
+    else:
+        processor_count = multiprocessing.cpu_count()
+
     with multiprocessing.Pool(processor_count) as p:
         data = p.map(spawn, param_dict_generator(args))
 
