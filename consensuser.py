@@ -19,7 +19,6 @@ import numpy
 import pysam
 from Bio import AlignIO
 from Bio import SeqIO
-from Bio import pairwise2
 from Bio.Align import AlignInfo
 from Bio.Align.Applications import ClustalwCommandline
 from Bio.Align.Applications import MuscleCommandline
@@ -27,7 +26,6 @@ from Bio.Alphabet import IUPAC
 from Bio.Alphabet import single_letter_alphabet
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-
 from cutadapt.adapters import LinkedAdapter
 from cutadapt.seqio import Sequence
 
@@ -60,81 +58,6 @@ root.addHandler(handler)
 
 root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 log = logging.getLogger("ccs-consensuser.py")
-
-
-# external helper functions used with permission #######################################################################
-# from: https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py under the MIT license
-
-def _remove_adaptor(seq, region, right_side=True):
-    """This function adapted from https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py
-    Remove an adaptor region and all sequence to the right or left.
-    """
-    if right_side:
-        try:
-            pos = seq.find(region)
-        # handle Biopython SeqRecords
-        except AttributeError:
-            pos = seq.seq.find(region)
-        return seq[:pos]
-    else:
-        try:
-            pos = seq.rfind(region)
-        # handle Biopython SeqRecords
-        except AttributeError:
-            pos = seq.seq.rfind(region)
-        return seq[pos + len(region):]
-
-
-def trim_adaptor(seq, adaptor, primer_mismatch, right_side=True):
-    """Trim the given adaptor sequence from a starting sequence.
-    * seq can be either of:
-       - string
-       - Seq
-    * adaptor is a string sequence
-    * primer_mismatch specifies how many errors are allowed in the match between
-    adaptor and the base sequence. Matches with more than this number of errors
-    are not allowed.
-    """
-    gap_char = '-'
-    exact_pos = str(seq).find(adaptor)
-    if exact_pos >= 0:
-        seq_region = str(seq[exact_pos:exact_pos + len(adaptor)])
-        adapt_region = adaptor
-    else:
-        aligns = pairwise2.align.localms(str(seq), str(adaptor),
-                                         5.0, -4.0, -9.0, -0.5, one_alignment_only=True,
-                                         gap_char=gap_char)
-        if len(aligns) == 0:
-            adapt_region, seq_region = ("", "")
-        else:
-            seq_a, adaptor_a, score, start, end = aligns[0]
-            adapt_region = adaptor_a[start:end]
-            seq_region = seq_a[start:end]
-    matches = sum((1 if s == adapt_region[i] else 0) for i, s in
-                  enumerate(seq_region))
-    # too many errors -- no trimming
-    if (len(adaptor) - matches) > primer_mismatch:
-        return seq
-    # remove the adaptor sequence and return the result
-    else:
-        return _remove_adaptor(seq,
-                               seq_region.replace(gap_char, ""),
-                               right_side)
-
-
-def trim_adaptor_w_qual(seq, qual, adaptor, primer_mismatch, right_side=True):
-    """Trim an adaptor with an associated quality string.
-    Works like trimmed adaptor, but also trims an associated quality score.
-    """
-    assert len(seq) == len(qual)
-    tseq = trim_adaptor(seq, adaptor, primer_mismatch, right_side=right_side)
-    if right_side:
-        pos = seq.find(tseq)
-    else:
-        pos = seq.rfind(tseq)
-    tqual = qual[pos:pos + len(tseq)]
-    assert len(tseq) == len(tqual)
-    return tseq, tqual
 
 
 # modified summary_align.gap_consensus() ###############################################################################
@@ -306,46 +229,7 @@ def quality_string_map(qualities, qual_str_to_list=False):
     return "".join([int_to_char[q] for q in qualities])
 
 
-def trim_both_ends_old(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
-    if reverse_complement:
-        rc = seq_rec.reverse_complement()
-        un_trimed_seq = rc.seq
-        un_trimed_qual = rc.letter_annotations["phred_quality"]
-    else:
-        un_trimed_seq = seq_rec.seq
-        un_trimed_qual = seq_rec.letter_annotations["phred_quality"]
-
-    # primer A,B found
-    found_a = False
-    found_b = False
-
-    half_trimed_seq, half_trimed_qual = trim_adaptor_w_qual(un_trimed_seq,
-                                                            un_trimed_qual,
-                                                            adaptor=primer_a,
-                                                            primer_mismatch=primer_mismatch,
-                                                            right_side=False)
-    if len(half_trimed_seq) < len(un_trimed_seq):
-        found_a = True
-
-    full_trimed_seq, full_trimed_qual = trim_adaptor_w_qual(half_trimed_seq,
-                                                            half_trimed_qual,
-                                                            adaptor=primer_b,
-                                                            primer_mismatch=primer_mismatch,
-                                                            right_side=True)
-    if len(full_trimed_seq) < len(half_trimed_seq):
-        found_b = True
-
-    if found_a and found_b:
-        trimed_seq_rec = copy.deepcopy(seq_rec)
-        del trimed_seq_rec.letter_annotations["phred_quality"]
-        trimed_seq_rec.seq = full_trimed_seq
-        trimed_seq_rec.letter_annotations["phred_quality"] = full_trimed_qual
-        return trimed_seq_rec
-    else:
-        return None
-
-
-def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
+def trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=False):
     # primer_b = str(Seq(primer_b).reverse_complement())
     if reverse_complement:
         rc = seq_rec.reverse_complement()
@@ -389,10 +273,10 @@ def mask_seq_record(seq_rec, min_score, mask_char="N", inplace=False):
     return masked_seq_req
 
 
-def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_base_score, basename, mask_char="N",
+def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basename, mask_char="N",
                               min_seq_score=None):
     for seq_rec in records:
-        trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False)
+        trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=False)
 
         # primers found in forword direction
         if trimed_seq_rec is not None:
@@ -405,7 +289,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
 
         # primers not found in forword direction
         else:
-            trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=True)
+            trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=True)
             if trimed_seq_rec is not None:  # primers found in reverse direction
                 avg_score = numpy.mean(trimed_seq_rec.letter_annotations["phred_quality"])
                 if min_seq_score and (avg_score < min_seq_score):
@@ -443,7 +327,6 @@ def param_dict_generator(args):
             # base filters
             "min_base_score": args.min_base_score,
             # sequence filters
-            "primer_mismatch": args.primer_mismatch,
             "sequence_max_mask": args.sequence_max_mask,
             "max_len_delta": args.max_len_delta,
             # optional sequence filters
@@ -469,7 +352,6 @@ def process_fastq(input_fn,
                   aligner="muscle",
                   mask_char="N",
                   min_base_score=60,
-                  primer_mismatch=2,
                   sequence_max_mask=None,
                   max_len_delta=None,
                   expected_length=None,
@@ -494,7 +376,7 @@ def process_fastq(input_fn,
     else:
         records = (r for r in SeqIO.parse(input_fn, "fastq", alphabet=IUPAC.ambiguous_dna) if len(r) < max_len)
 
-    clean_records = list(trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch,
+    clean_records = list(trim_and_mask_seq_records(records, primer_a, primer_b,
                                                    min_base_score, basename, mask_char, min_seq_score))
 
     if len(clean_records) < min_seq_count:
@@ -669,9 +551,6 @@ def main():
                         help='score below which a nuc is masked')
 
     # sequence filters
-    parser.add_argument('-e', '--primer_mismatch', type=int, default="2",
-                        help='number of errors allowed in primer match')
-
     parser.add_argument('-p', '--sequence_max_mask', type=int, default="5",
                         help='number of mask_char allowed in sequences to be aligned')
 
