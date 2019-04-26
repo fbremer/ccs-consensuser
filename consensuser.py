@@ -16,7 +16,7 @@ import time
 from glob import glob
 
 import Bio
-import numpy
+import numpy as np
 import pysam
 from Bio import AlignIO
 from Bio import SeqIO
@@ -250,7 +250,7 @@ def trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=False):
     if match:
         trimed_seq_rec = copy.deepcopy(seq_rec)
         del trimed_seq_rec.letter_annotations["phred_quality"]
-        trimed_seq_rec.seq = match.trimmed().sequence
+        trimed_seq_rec.seq = Seq(match.trimmed().sequence, alphabet=IUPAC.ambiguous_dna)
         trimed_seq_rec.letter_annotations["phred_quality"] = quality_string_map(match.trimmed().qualities,
                                                                                 qual_str_to_list=True)
         return trimed_seq_rec
@@ -260,18 +260,18 @@ def trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=False):
 
 def mask_seq_record(seq_rec, min_score, mask_char="N", inplace=False):
     if not inplace:
-        masked_seq_req = copy.deepcopy(seq_rec)
+        masked_seq_rec = copy.deepcopy(seq_rec)
     else:
-        masked_seq_req = seq_rec
+        masked_seq_rec = seq_rec
 
-    base_list = list(masked_seq_req.seq)
+    base_list = list(masked_seq_rec.seq)
     for loc in range(len(base_list)):
-        if masked_seq_req.letter_annotations["phred_quality"][loc] < min_score:
+        if masked_seq_rec.letter_annotations["phred_quality"][loc] < min_score:
             base_list[loc] = mask_char
 
-    masked_seq_req.seq = Seq("".join(base_list), alphabet=IUPAC.ambiguous_dna)
+    masked_seq_rec.seq = Seq("".join(base_list), alphabet=IUPAC.ambiguous_dna)
 
-    return masked_seq_req
+    return masked_seq_rec
 
 
 def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basename, mask_char="N",
@@ -281,7 +281,10 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
 
         # primers found in forword direction
         if trimed_seq_rec is not None:
-            avg_score = numpy.mean(trimed_seq_rec.letter_annotations["phred_quality"])
+            qualities = trimed_seq_rec.letter_annotations["phred_quality"]
+            if len(qualities) == 0:
+                log.info("empty qualities list, excluding - {} {}".format(basename, seq_rec.id))
+            avg_score = np.mean(qualities)
             if min_seq_score and (avg_score < min_seq_score):
                 log.info("seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
                                                                                               basename, seq_rec.id))
@@ -292,7 +295,10 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
         else:
             trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=True)
             if trimed_seq_rec is not None:  # primers found in reverse direction
-                avg_score = numpy.mean(trimed_seq_rec.letter_annotations["phred_quality"])
+                qualities = trimed_seq_rec.letter_annotations["phred_quality"]
+                if len(qualities) == 0:
+                    log.info("empty qualities list, excluding - {} {}".format(basename, seq_rec.id))
+                avg_score = np.mean(qualities)
                 if min_seq_score and (avg_score < min_seq_score):
                     log.info(
                         "seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
@@ -316,7 +322,14 @@ def param_dict_generator(args):
         in_file_list = [args.in_file]
     else:
         with open(args.in_file_list, "r") as f:
-            in_file_list = [os.path.join(args.in_dir, l.strip()) for l in f.readlines()]
+            lines = f.readlines()
+            in_file_list = []
+            for line in lines:
+                in_file = line.strip()
+                if os.path.isfile(in_file):
+                    in_file_list.append(in_file)
+                else:
+                    log.info("file not found - {}".format(in_file))
 
     for fn in in_file_list:
         yield {
@@ -365,12 +378,16 @@ def process_fastq(input_fn,
                   consensus_require_multiple=False,
                   consensus_ambiguous_char="X",
                   consensus_ignore_mask_char=False):
+
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
-    # noinspection PyTypeChecker
-    primer_a = basename.split("_")[-1].split(".")[2]
-    # noinspection PyTypeChecker
-    primer_b = basename.split("_")[-1].split(".")[3]
+    serch_obj = re.search(r"_([^._]+?)\.([^.]+?)\.([^.]+?)\.([^.]+?)$", basename)
+    if not serch_obj:
+        log.info("couldn't parse adapters from filename, skipping - {}".format(input_fn))
+        return
+    else:
+        primer_a = serch_obj.group(3)
+        primer_b = serch_obj.group(4)
 
     # parse fastq file
     if max_len is None:
@@ -537,9 +554,6 @@ def main():
     # batch mode filelist settings
     parser.add_argument('--in_file_list', default=None,
                         help='path to text file w/ an in_file filename on each line')
-
-    parser.add_argument('--in_dir', default=None,
-                        help='input dir of files named in in_file_list')
 
     # settings/options
     parser.add_argument('-l', '--aligner', default="muscle",
