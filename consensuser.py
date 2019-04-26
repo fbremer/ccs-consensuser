@@ -282,7 +282,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
         # primers found in forword direction
         if trimed_seq_rec is not None:
             qualities = trimed_seq_rec.letter_annotations["phred_quality"]
-            if len(qualities) == 0:
+            if len(qualities) == 0:  # todo: only check if we care
                 log.info("empty qualities list, excluding - {} {}".format(basename, seq_rec.id))
                 continue
             avg_score = np.mean(qualities)
@@ -318,7 +318,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
 
 def param_dict_generator(args):
     output_dir = get_unique_dir(args.out_dir)
-    time.sleep(15)
+    time.sleep(15)  # todo: this should be optional and a user set wait time
 
     if args.in_file_list is None:
         in_file_list = [args.in_file]
@@ -383,7 +383,7 @@ def process_fastq(input_fn,
 
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
-    serch_obj = re.search(r"_([^._]+?)\.([^.]+?)\.([^.]+?)\.([^.]+?)$", basename)
+    serch_obj = re.search(r"_([^._]+?)\.([^.]+?)\.([^.]+?)\.([^.]+?)$", basename)  # todo: regex should be user set
     if not serch_obj:
         log.info("couldn't parse adapters from filename, skipping - {}".format(input_fn))
         return
