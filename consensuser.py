@@ -284,6 +284,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
             qualities = trimed_seq_rec.letter_annotations["phred_quality"]
             if len(qualities) == 0:
                 log.info("empty qualities list, excluding - {} {}".format(basename, seq_rec.id))
+                continue
             avg_score = np.mean(qualities)
             if min_seq_score and (avg_score < min_seq_score):
                 log.info("seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
@@ -298,6 +299,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
                 qualities = trimed_seq_rec.letter_annotations["phred_quality"]
                 if len(qualities) == 0:
                     log.info("empty qualities list, excluding - {} {}".format(basename, seq_rec.id))
+                    continue
                 avg_score = np.mean(qualities)
                 if min_seq_score and (avg_score < min_seq_score):
                     log.info(
