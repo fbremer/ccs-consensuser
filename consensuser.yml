@@ -1,9 +1,8 @@
 name: ccs-consensuser
 channels:
-- r
-- defaults
 - conda-forge
 - bioconda
+- defaults
 dependencies:
 - python=3
 - anaconda

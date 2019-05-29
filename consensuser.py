@@ -139,6 +139,107 @@ def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguou
     return Seq(consensus, consensus_alpha)
 
 
+def diploid_gap_consensus(summary_align, threshold=.7, diploid_threshold=.3, mask_char="N",
+                          consensus_ambiguous_char="X", consensus_alpha=None, require_multiple=False,
+                          consensus_ignore_mask_char=False):
+    """Output a fast consensus sequence of the alignment, allowing gaps.
+
+    Same as dumb_consensus(), but allows gap on the output.
+
+    Things to do:
+     - Let the user define that with only one gap, the result
+       character in consensus is gap.
+     - Let the user select gap character, now
+       it takes the same as input.
+
+    """
+
+    # pre-compute dictionaries on first run
+    if "collapse_iupac" not in diploid_gap_consensus.__dict__:
+        # sorted tuples map to iupac codes
+        diploid_gap_consensus.collapse_iupac = {
+            ('-',): '-',
+            ('a',): 'a',
+            ('g',): 'g',
+            ('c',): 'c',
+            ('t',): 't',
+            ('c', 't'): 'y',
+            ('a', 'g'): 'r',
+            ('a', 't'): 'w',
+            ('c', 'g'): 's',
+            ('g', 't'): 'k',
+            ('a', 'c'): 'm',
+            ('a', 'g', 't'): 'd',
+            ('a', 'c', 'g'): 'v',
+            ('a', 'c', 't'): 'h',
+            ('c', 'g', 't'): 'b',
+            ('a', 'c', 'g', 't'): 'n',
+        }
+
+    # Iddo Friedberg, 1-JUL-2004: changed ambiguous default to "X"
+    consensus = ''
+
+    # find the length of the consensus we are creating
+    con_len = summary_align.alignment.get_alignment_length()
+
+    # go through each seq item
+    for n in range(con_len):
+        # keep track of the counts of the different atoms we get
+        atom_dict = {}
+        num_atoms = 0
+
+        for record in summary_align.alignment:
+            # make sure we haven't run past the end of any sequences
+            # if they are of different lengths
+            if n < len(record.seq):
+                if consensus_ignore_mask_char and (record.seq[n] == mask_char):
+                    continue
+                if record.seq[n] not in atom_dict:
+                    atom_dict[record.seq[n]] = 1
+                else:
+                    atom_dict[record.seq[n]] += 1
+
+                num_atoms += 1
+
+        threshold_int = threshold * num_atoms
+        diploid_threshold_int = diploid_threshold * num_atoms
+        max_atoms = sorted([(atom,count)for atom,count in atom_dict.items()], key=lambda tup: tup[1])
+        if require_multiple and num_atoms == 1:
+            consensus += consensus_ambiguous_char
+        elif max_atoms[0][1] > threshold:  # if top atom over threshold
+            consensus += max_atoms[0][0]
+        else:
+            diploid_atoms = tuple(sorted([atom.lower() for atom,count in max_atoms if count > diploid_threshold]))
+            if len(diploid_atoms) > 1:  # if at least 2 atoms over diploid_threshold
+                consensus += diploid_gap_consensus.collapse_iupac[diploid_atoms]
+            else:
+                consensus += consensus_ambiguous_char
+
+        # max_atoms = []
+        # max_size = 0
+        #
+        # for atom in atom_dict:
+        #     if atom_dict[atom] > max_size:
+        #         max_atoms = [atom]
+        #         max_size = atom_dict[atom]
+        #     elif atom_dict[atom] == max_size:
+        #         max_atoms.append(atom)
+        #
+        # if require_multiple and num_atoms == 1:
+        #     consensus += consensus_ambiguous_char
+        # elif (len(max_atoms) == 1) and ((float(max_size) / float(num_atoms)) >= threshold):
+        #     consensus += max_atoms[0]
+        # else:
+        #     consensus += consensus_ambiguous_char
+
+    # we need to guess a consensus alphabet if one isn't specified
+    if consensus_alpha is None:
+        # noinspection PyProtectedMember
+        consensus_alpha = summary_align._guess_consensus_alphabet(consensus_ambiguous_char)
+
+    return Seq(consensus, consensus_alpha)
+
+
 # helper functions #####################################################################################################
 
 def get_unique_dir(path, width=3):
@@ -318,7 +419,8 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
 
 def param_dict_generator(args):
     output_dir = get_unique_dir(args.out_dir)
-    time.sleep(15)  # todo: this should be optional and a user set wait time
+    if args.sleep_time is not None:
+        time.sleep(args.sleep_time)
 
     if args.in_file_list is None:
         in_file_list = [args.in_file]
@@ -354,7 +456,9 @@ def param_dict_generator(args):
             "min_seq_count": args.min_seq_count,
             "alignment_max_amb": args.alignment_max_amb,
             # consensus options
+            "consensus_diploid_mode": args.consensus_diploid_mode,
             "consensus_threshold": args.consensus_threshold,
+            "consensus_diploid_threshold": args.consensus_diploid_threshold,
             "consensus_require_multiple": args.consensus_require_multiple,
             "consensus_ambiguous_char": args.consensus_ambiguous_char,
             "consensus_ignore_mask_char": args.consensus_ignore_mask_char}
@@ -376,7 +480,9 @@ def process_fastq(input_fn,
                   min_seq_score=None,
                   min_seq_count=1,
                   alignment_max_amb=None,
+                  consensus_diploid_mode=False,
                   consensus_threshold=0.7,
+                  consensus_diploid_threshold=0.3,
                   consensus_require_multiple=False,
                   consensus_ambiguous_char="X",
                   consensus_ignore_mask_char=False):
@@ -506,10 +612,18 @@ def process_fastq(input_fn,
     summary_align = AlignInfo.SummaryInfo(alignment)
 
     # write consensus fasta
-    consensus = gap_consensus(summary_align, threshold=consensus_threshold, mask_char=mask_char,
-                              consensus_ambiguous_char=consensus_ambiguous_char, consensus_alpha=IUPAC.ambiguous_dna,
-                              require_multiple=consensus_require_multiple,
-                              consensus_ignore_mask_char=consensus_ignore_mask_char)
+    if consensus_diploid_mode:
+        consensus = diploid_gap_consensus(summary_align, threshold=consensus_threshold,
+                                          diploid_threshold=consensus_diploid_threshold, mask_char=mask_char,
+                                          consensus_ambiguous_char=consensus_ambiguous_char,
+                                          consensus_alpha=IUPAC.ambiguous_dna,
+                                          require_multiple=consensus_require_multiple,
+                                          consensus_ignore_mask_char=consensus_ignore_mask_char)
+    else:
+        consensus = gap_consensus(summary_align, threshold=consensus_threshold, mask_char=mask_char,
+                                  consensus_ambiguous_char=consensus_ambiguous_char, consensus_alpha=IUPAC.ambiguous_dna,
+                                  require_multiple=consensus_require_multiple,
+                                  consensus_ignore_mask_char=consensus_ignore_mask_char)
     amb_count = consensus.upper().count(mask_char)
     if (alignment_max_amb is not None) and (amb_count > alignment_max_amb):
         log.info(
@@ -557,6 +671,9 @@ def main():
     parser.add_argument('--in_file_list', default=None,
                         help='path to text file w/ an in_file filename on each line')
 
+    parser.add_argument('--sleep_time', type=int, default=None,
+                        help='max length overwhich a seq is excluded')
+
     # settings/options
     parser.add_argument('-l', '--aligner', default="muscle",
                         help='the alignment software to use. {clustalw, muscle}')
@@ -593,7 +710,13 @@ def main():
                         help='number of consensus_ambiguous_char allowed in final consensus sequences')
 
     # consensus options
+    parser.add_argument('--consensus_diploid_mode', action='store_true',
+                        help='require multiple instanses for consensus to call a base')
+
     parser.add_argument('--consensus_threshold', type=float, default=".7",
+                        help='proportion threshold for consensus to call a base.')
+
+    parser.add_argument('--consensus_diploid_threshold', type=float, default=".3",
                         help='proportion threshold for consensus to call a base.')
 
     parser.add_argument('--consensus_require_multiple', action='store_true',
