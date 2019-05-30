@@ -65,12 +65,12 @@ log = logging.getLogger("ccs-consensuser.py")
 
 # Copyright 2000 Brad Chapman.  All rights reserved.
 #
-# This file is part of the Biopython distribution and governed by your
+# This f̶̶i̶l̶e section is p̶a̶r̶t̶ ̶o̶f modified from the Biopython distribution and governed by your
 # choice of the "Biopython License Agreement" or the "BSD 3-Clause License".
 # Please see the LICENSE file that should have been included as part of this
 # package.
 
-# https://github.com/biopython/biopython/blob/master/LICENSE.rst
+# LICENSE file: https://github.com/biopython/biopython/blob/master/LICENSE.rst
 """Modified such that if consensus_ignore_mask_char flag is set, the sequence with mask_char is ignored in residue 
 calculations at the masked position
 """
@@ -158,7 +158,6 @@ def diploid_gap_consensus(summary_align, threshold=.7, diploid_threshold=.3, mas
     if "collapse_iupac" not in diploid_gap_consensus.__dict__:
         # sorted tuples map to iupac codes
         diploid_gap_consensus.collapse_iupac = {
-            ('-',): '-',
             ('a',): 'a',
             ('g',): 'g',
             ('c',): 'c',
@@ -201,36 +200,24 @@ def diploid_gap_consensus(summary_align, threshold=.7, diploid_threshold=.3, mas
 
                 num_atoms += 1
 
-        threshold_int = threshold * num_atoms
-        diploid_threshold_int = diploid_threshold * num_atoms
-        max_atoms = sorted([(atom,count)for atom,count in atom_dict.items()], key=lambda tup: tup[1])
+        threshold_count = threshold * num_atoms
+        diploid_threshold_count = diploid_threshold * num_atoms
+
+        max_atoms = sorted([(atom, count)for atom, count in atom_dict.items()], key=lambda tup: tup[1], reverse=True)
         if require_multiple and num_atoms == 1:
             consensus += consensus_ambiguous_char
-        elif max_atoms[0][1] > threshold:  # if top atom over threshold
+        elif max_atoms[0][1] >= threshold_count:  # if top atom over threshold_count
             consensus += max_atoms[0][0]
-        else:
-            diploid_atoms = tuple(sorted([atom.lower() for atom,count in max_atoms if count > diploid_threshold]))
-            if len(diploid_atoms) > 1:  # if at least 2 atoms over diploid_threshold
+        else:  # diploid base handling
+            diploid_atoms = tuple(sorted([atom.lower()
+                                          for atom, count
+                                          in max_atoms
+                                          if count >= diploid_threshold_count
+                                          and atom.lower() in {'a', 't', 'g', 'c'}]))
+            if len(diploid_atoms) > 1:  # if at least 2 atoms over diploid_threshold_count
                 consensus += diploid_gap_consensus.collapse_iupac[diploid_atoms]
             else:
                 consensus += consensus_ambiguous_char
-
-        # max_atoms = []
-        # max_size = 0
-        #
-        # for atom in atom_dict:
-        #     if atom_dict[atom] > max_size:
-        #         max_atoms = [atom]
-        #         max_size = atom_dict[atom]
-        #     elif atom_dict[atom] == max_size:
-        #         max_atoms.append(atom)
-        #
-        # if require_multiple and num_atoms == 1:
-        #     consensus += consensus_ambiguous_char
-        # elif (len(max_atoms) == 1) and ((float(max_size) / float(num_atoms)) >= threshold):
-        #     consensus += max_atoms[0]
-        # else:
-        #     consensus += consensus_ambiguous_char
 
     # we need to guess a consensus alphabet if one isn't specified
     if consensus_alpha is None:
@@ -576,7 +563,7 @@ def process_fastq(input_fn,
             pass
         else:
             for r in clean_records:
-                f.write(r.format("fasta"))
+                f.write(r.format("fasta-2line"))
 
     # align clean fasta
     if aligner == "muscle":
@@ -635,8 +622,9 @@ def process_fastq(input_fn,
     # noinspection PyTypeChecker
     seq_rec = SeqRecord(seq=seq, id=basename.split("prime_")[0] + "prime", description=description)
     with open(os.path.join(output_dir, basename) + ".{}.consensus.fasta".format(len(alignment)), "wt") as f:
-        fasta_entry = seq_rec.format("fasta").strip().split("\n")
-        fasta_entry = fasta_entry[0] + "\n" + "".join(fasta_entry[1:]) + "\n"
+        # fasta_entry = seq_rec.format("fasta").strip().split("\n")
+        # fasta_entry = fasta_entry[0] + "\n" + "".join(fasta_entry[1:]) + "\n"
+        fasta_entry = seq_rec.format("fasta-2line")
         f.write(fasta_entry)
 
 
@@ -657,11 +645,7 @@ def main():
 
     # files/directories
     parser.add_argument('-i', '--in_file',
-                        default=('all.ccs.3347.COI_ATAGCGACGCGATATA'
-                                 '.AGCGTCTCGCATCATG'
-                                 '.TYTCAACDAAYCAYAAAGATATTGA'
-                                 '.TAATATGGCAGATTAGTGCAATGGA'
-                                 '.fastq'),
+                        default=('diploid.test_ATAGCGACGCGATATA.AGCGTCTCGCATCATG.TYTCAACDAAYCAYAAAGATATTGA.TAATATGGCAGATTAGTGCAATGGA.fastq'),
                         help='path to input file')
 
     parser.add_argument('-o', '--out_dir', default="output",
@@ -711,7 +695,7 @@ def main():
 
     # consensus options
     parser.add_argument('--consensus_diploid_mode', action='store_true',
-                        help='require multiple instanses for consensus to call a base')
+                        help='use diploid mode for consensus calling')
 
     parser.add_argument('--consensus_threshold', type=float, default=".7",
                         help='proportion threshold for consensus to call a base.')
