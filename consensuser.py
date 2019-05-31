@@ -76,19 +76,9 @@ calculations at the masked position
 """
 
 
+# todo: add an any_gap flag
 def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguous_char="X",
                   consensus_alpha=None, require_multiple=False, consensus_ignore_mask_char=False):
-    """Output a fast consensus sequence of the alignment, allowing gaps.
-
-    Same as dumb_consensus(), but allows gap on the output.
-
-    Things to do:
-     - Let the user define that with only one gap, the result
-       character in consensus is gap.
-     - Let the user select gap character, now
-       it takes the same as input.
-
-    """
     # Iddo Friedberg, 1-JUL-2004: changed ambiguous default to "X"
     consensus = ''
 
@@ -142,37 +132,26 @@ def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguou
 def diploid_gap_consensus(summary_align, threshold=.7, diploid_threshold=.3, mask_char="N",
                           consensus_ambiguous_char="X", consensus_alpha=None, require_multiple=False,
                           consensus_ignore_mask_char=False):
-    """Output a fast consensus sequence of the alignment, allowing gaps.
-
-    Same as dumb_consensus(), but allows gap on the output.
-
-    Things to do:
-     - Let the user define that with only one gap, the result
-       character in consensus is gap.
-     - Let the user select gap character, now
-       it takes the same as input.
-
-    """
 
     # pre-compute dictionaries on first run
     if "collapse_iupac" not in diploid_gap_consensus.__dict__:
         # sorted tuples map to iupac codes
         diploid_gap_consensus.collapse_iupac = {
-            ('a',): 'a',
-            ('g',): 'g',
-            ('c',): 'c',
-            ('t',): 't',
+            # ('a',): 'a',
+            # ('g',): 'g',
+            # ('c',): 'c',
+            # ('t',): 't',
             ('c', 't'): 'y',
             ('a', 'g'): 'r',
             ('a', 't'): 'w',
             ('c', 'g'): 's',
             ('g', 't'): 'k',
             ('a', 'c'): 'm',
-            ('a', 'g', 't'): 'd',
-            ('a', 'c', 'g'): 'v',
-            ('a', 'c', 't'): 'h',
-            ('c', 'g', 't'): 'b',
-            ('a', 'c', 'g', 't'): 'n',
+            # ('a', 'g', 't'): 'd',
+            # ('a', 'c', 'g'): 'v',
+            # ('a', 'c', 't'): 'h',
+            # ('c', 'g', 't'): 'b',
+            # ('a', 'c', 'g', 't'): 'n',
         }
 
     # Iddo Friedberg, 1-JUL-2004: changed ambiguous default to "X"
@@ -204,18 +183,29 @@ def diploid_gap_consensus(summary_align, threshold=.7, diploid_threshold=.3, mas
         diploid_threshold_count = diploid_threshold * num_atoms
 
         max_atoms = sorted([(atom, count)for atom, count in atom_dict.items()], key=lambda tup: tup[1], reverse=True)
+
         if require_multiple and num_atoms == 1:
             consensus += consensus_ambiguous_char
+
         elif max_atoms[0][1] >= threshold_count:  # if top atom over threshold_count
             consensus += max_atoms[0][0]
+
         else:  # diploid base handling
-            diploid_atoms = tuple(sorted([atom.lower()
-                                          for atom, count
-                                          in max_atoms
-                                          if count >= diploid_threshold_count
-                                          and atom.lower() in {'a', 't', 'g', 'c'}]))
-            if len(diploid_atoms) > 1:  # if at least 2 atoms over diploid_threshold_count
-                consensus += diploid_gap_consensus.collapse_iupac[diploid_atoms]
+            if require_multiple:
+                diploid_atoms = [(atom, count)
+                                 for atom, count in max_atoms
+                                 if count >= diploid_threshold_count
+                                 and count > 1
+                                 and atom.lower() in {'a', 't', 'g', 'c'}]
+            else:
+                diploid_atoms = [(atom, count)
+                                 for atom, count in max_atoms
+                                 if count >= diploid_threshold_count
+                                 and atom.lower() in {'a', 't', 'g', 'c'}]
+
+            if len(diploid_atoms) >= 2 and diploid_atoms[0][1] + diploid_atoms[1][1] >= threshold_count:
+                base_set = tuple(sorted([atom.lower() for atom, count in diploid_atoms[:2]]))
+                consensus += diploid_gap_consensus.collapse_iupac[base_set]
             else:
                 consensus += consensus_ambiguous_char
 
