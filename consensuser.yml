@@ -1,14 +1,13 @@
 name: ccs-consensuser
 channels:
-- r
-- defaults
 - conda-forge
 - bioconda
+- defaults
 dependencies:
 - python=3
 - anaconda
 - biopython
-- cutadapt
+- cutadapt=1.18
 - pysam
 - numpy
 - muscle

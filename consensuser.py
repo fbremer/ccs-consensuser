@@ -12,14 +12,14 @@ import os
 import re
 import statistics
 import sys
+import time
 from glob import glob
 
 import Bio
-import numpy
+import numpy as np
 import pysam
 from Bio import AlignIO
 from Bio import SeqIO
-from Bio import pairwise2
 from Bio.Align import AlignInfo
 from Bio.Align.Applications import ClustalwCommandline
 from Bio.Align.Applications import MuscleCommandline
@@ -27,6 +27,8 @@ from Bio.Alphabet import IUPAC
 from Bio.Alphabet import single_letter_alphabet
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
+from cutadapt.adapters import LinkedAdapter
+from cutadapt.seqio import Sequence
 
 
 # logging ##############################################################################################################
@@ -59,109 +61,24 @@ root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 log = logging.getLogger("ccs-consensuser.py")
 
 
-# external helper functions used with permission #######################################################################
-# from: https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py under the MIT license
-
-def _remove_adaptor(seq, region, right_side=True):
-    """This function adapted from https://github.com/chapmanb/bcbb/blob/master/align/adaptor_trim.py
-    Remove an adaptor region and all sequence to the right or left.
-    """
-    if right_side:
-        try:
-            pos = seq.find(region)
-        # handle Biopython SeqRecords
-        except AttributeError:
-            pos = seq.seq.find(region)
-        return seq[:pos]
-    else:
-        try:
-            pos = seq.rfind(region)
-        # handle Biopython SeqRecords
-        except AttributeError:
-            pos = seq.seq.rfind(region)
-        return seq[pos + len(region):]
-
-
-def trim_adaptor(seq, adaptor, primer_mismatch, right_side=True):
-    """Trim the given adaptor sequence from a starting sequence.
-    * seq can be either of:
-       - string
-       - Seq
-    * adaptor is a string sequence
-    * primer_mismatch specifies how many errors are allowed in the match between
-    adaptor and the base sequence. Matches with more than this number of errors
-    are not allowed.
-    """
-    gap_char = '-'
-    exact_pos = str(seq).find(adaptor)
-    if exact_pos >= 0:
-        seq_region = str(seq[exact_pos:exact_pos + len(adaptor)])
-        adapt_region = adaptor
-    else:
-        aligns = pairwise2.align.localms(str(seq), str(adaptor),
-                                         5.0, -4.0, -9.0, -0.5, one_alignment_only=True,
-                                         gap_char=gap_char)
-        if len(aligns) == 0:
-            adapt_region, seq_region = ("", "")
-        else:
-            seq_a, adaptor_a, score, start, end = aligns[0]
-            adapt_region = adaptor_a[start:end]
-            seq_region = seq_a[start:end]
-    matches = sum((1 if s == adapt_region[i] else 0) for i, s in
-                  enumerate(seq_region))
-    # too many errors -- no trimming
-    if (len(adaptor) - matches) > primer_mismatch:
-        return seq
-    # remove the adaptor sequence and return the result
-    else:
-        return _remove_adaptor(seq,
-                               seq_region.replace(gap_char, ""),
-                               right_side)
-
-
-def trim_adaptor_w_qual(seq, qual, adaptor, primer_mismatch, right_side=True):
-    """Trim an adaptor with an associated quality string.
-    Works like trimmed adaptor, but also trims an associated quality score.
-    """
-    assert len(seq) == len(qual)
-    tseq = trim_adaptor(seq, adaptor, primer_mismatch, right_side=right_side)
-    if right_side:
-        pos = seq.find(tseq)
-    else:
-        pos = seq.rfind(tseq)
-    tqual = qual[pos:pos + len(tseq)]
-    assert len(tseq) == len(tqual)
-    return tseq, tqual
-
-
 # modified summary_align.gap_consensus() ###############################################################################
 
 # Copyright 2000 Brad Chapman.  All rights reserved.
 #
-# This file is part of the Biopython distribution and governed by your
+# This f̶̶i̶l̶e section is p̶a̶r̶t̶ ̶o̶f modified from the Biopython distribution and governed by your
 # choice of the "Biopython License Agreement" or the "BSD 3-Clause License".
 # Please see the LICENSE file that should have been included as part of this
 # package.
 
-# https://github.com/biopython/biopython/blob/master/LICENSE.rst
+# LICENSE file: https://github.com/biopython/biopython/blob/master/LICENSE.rst
 """Modified such that if consensus_ignore_mask_char flag is set, the sequence with mask_char is ignored in residue 
 calculations at the masked position
 """
 
 
+# todo: add an any_gap flag
 def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguous_char="X",
                   consensus_alpha=None, require_multiple=False, consensus_ignore_mask_char=False):
-    """Output a fast consensus sequence of the alignment, allowing gaps.
-
-    Same as dumb_consensus(), but allows gap on the output.
-
-    Things to do:
-     - Let the user define that with only one gap, the result
-       character in consensus is gap.
-     - Let the user select gap character, now
-       it takes the same as input.
-
-    """
     # Iddo Friedberg, 1-JUL-2004: changed ambiguous default to "X"
     consensus = ''
 
@@ -203,6 +120,94 @@ def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguou
             consensus += max_atoms[0]
         else:
             consensus += consensus_ambiguous_char
+
+    # we need to guess a consensus alphabet if one isn't specified
+    if consensus_alpha is None:
+        # noinspection PyProtectedMember
+        consensus_alpha = summary_align._guess_consensus_alphabet(consensus_ambiguous_char)
+
+    return Seq(consensus, consensus_alpha)
+
+
+def diploid_gap_consensus(summary_align, threshold=.7, diploid_threshold=.3, mask_char="N",
+                          consensus_ambiguous_char="X", consensus_alpha=None, require_multiple=False,
+                          consensus_ignore_mask_char=False):
+
+    # pre-compute dictionaries on first run
+    if "collapse_iupac" not in diploid_gap_consensus.__dict__:
+        # sorted tuples map to iupac codes
+        diploid_gap_consensus.collapse_iupac = {
+            # ('a',): 'a',
+            # ('g',): 'g',
+            # ('c',): 'c',
+            # ('t',): 't',
+            ('c', 't'): 'y',
+            ('a', 'g'): 'r',
+            ('a', 't'): 'w',
+            ('c', 'g'): 's',
+            ('g', 't'): 'k',
+            ('a', 'c'): 'm',
+            # ('a', 'g', 't'): 'd',
+            # ('a', 'c', 'g'): 'v',
+            # ('a', 'c', 't'): 'h',
+            # ('c', 'g', 't'): 'b',
+            # ('a', 'c', 'g', 't'): 'n',
+        }
+
+    # Iddo Friedberg, 1-JUL-2004: changed ambiguous default to "X"
+    consensus = ''
+
+    # find the length of the consensus we are creating
+    con_len = summary_align.alignment.get_alignment_length()
+
+    # go through each seq item
+    for n in range(con_len):
+        # keep track of the counts of the different atoms we get
+        atom_dict = {}
+        num_atoms = 0
+
+        for record in summary_align.alignment:
+            # make sure we haven't run past the end of any sequences
+            # if they are of different lengths
+            if n < len(record.seq):
+                if consensus_ignore_mask_char and (record.seq[n] == mask_char):
+                    continue
+                if record.seq[n] not in atom_dict:
+                    atom_dict[record.seq[n]] = 1
+                else:
+                    atom_dict[record.seq[n]] += 1
+
+                num_atoms += 1
+
+        threshold_count = threshold * num_atoms
+        diploid_threshold_count = diploid_threshold * num_atoms
+
+        max_atoms = sorted([(atom, count)for atom, count in atom_dict.items()], key=lambda tup: tup[1], reverse=True)
+
+        if require_multiple and num_atoms == 1:
+            consensus += consensus_ambiguous_char
+
+        elif max_atoms[0][1] >= threshold_count:  # if top atom over threshold_count
+            consensus += max_atoms[0][0]
+
+        else:  # diploid base handling
+            if require_multiple:
+                diploid_atoms = [(atom, count)
+                                 for atom, count in max_atoms
+                                 if count >= diploid_threshold_count
+                                 and count > 1
+                                 and atom.lower() in {'a', 't', 'g', 'c'}]
+            else:
+                diploid_atoms = [(atom, count)
+                                 for atom, count in max_atoms
+                                 if count >= diploid_threshold_count
+                                 and atom.lower() in {'a', 't', 'g', 'c'}]
+
+            if len(diploid_atoms) >= 2 and diploid_atoms[0][1] + diploid_atoms[1][1] >= threshold_count:
+                base_set = tuple(sorted([atom.lower() for atom, count in diploid_atoms[:2]]))
+                consensus += diploid_gap_consensus.collapse_iupac[base_set]
+            else:
+                consensus += consensus_ambiguous_char
 
     # we need to guess a consensus alphabet if one isn't specified
     if consensus_alpha is None:
@@ -303,40 +308,29 @@ def quality_string_map(qualities, qual_str_to_list=False):
     return "".join([int_to_char[q] for q in qualities])
 
 
-def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False):
+def trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=False):
+    # primer_b = str(Seq(primer_b).reverse_complement())
     if reverse_complement:
         rc = seq_rec.reverse_complement()
-        un_trimed_seq = rc.seq
-        un_trimed_qual = rc.letter_annotations["phred_quality"]
+        un_trimed_seq = str(rc.seq)
+        un_trimed_qual = quality_string_map(rc.letter_annotations["phred_quality"])
     else:
-        un_trimed_seq = seq_rec.seq
-        un_trimed_qual = seq_rec.letter_annotations["phred_quality"]
+        un_trimed_seq = str(seq_rec.seq)
+        un_trimed_qual = quality_string_map(seq_rec.letter_annotations["phred_quality"])
 
-    # primer A,B found
-    found_a = False
-    found_b = False
+    adapter = LinkedAdapter(primer_a, primer_b,
+                            front_restriction=None,
+                            back_restriction=None,
+                            require_both=True)
+    sequence = Sequence(seq_rec.id, un_trimed_seq, un_trimed_qual)
+    match = adapter.match_to(sequence)
 
-    half_trimed_seq, half_trimed_qual = trim_adaptor_w_qual(un_trimed_seq,
-                                                            un_trimed_qual,
-                                                            adaptor=primer_a,
-                                                            primer_mismatch=primer_mismatch,
-                                                            right_side=False)
-    if len(half_trimed_seq) < len(un_trimed_seq):
-        found_a = True
-
-    full_trimed_seq, full_trimed_qual = trim_adaptor_w_qual(half_trimed_seq,
-                                                            half_trimed_qual,
-                                                            adaptor=primer_b,
-                                                            primer_mismatch=primer_mismatch,
-                                                            right_side=True)
-    if len(full_trimed_seq) < len(half_trimed_seq):
-        found_b = True
-
-    if found_a and found_b:
+    if match:
         trimed_seq_rec = copy.deepcopy(seq_rec)
         del trimed_seq_rec.letter_annotations["phred_quality"]
-        trimed_seq_rec.seq = full_trimed_seq
-        trimed_seq_rec.letter_annotations["phred_quality"] = full_trimed_qual
+        trimed_seq_rec.seq = Seq(match.trimmed().sequence, alphabet=IUPAC.ambiguous_dna)
+        trimed_seq_rec.letter_annotations["phred_quality"] = quality_string_map(match.trimmed().qualities,
+                                                                                qual_str_to_list=True)
         return trimed_seq_rec
     else:
         return None
@@ -344,28 +338,32 @@ def trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complem
 
 def mask_seq_record(seq_rec, min_score, mask_char="N", inplace=False):
     if not inplace:
-        masked_seq_req = copy.deepcopy(seq_rec)
+        masked_seq_rec = copy.deepcopy(seq_rec)
     else:
-        masked_seq_req = seq_rec
+        masked_seq_rec = seq_rec
 
-    base_list = list(masked_seq_req.seq)
+    base_list = list(masked_seq_rec.seq)
     for loc in range(len(base_list)):
-        if masked_seq_req.letter_annotations["phred_quality"][loc] < min_score:
+        if masked_seq_rec.letter_annotations["phred_quality"][loc] < min_score:
             base_list[loc] = mask_char
 
-    masked_seq_req.seq = Seq("".join(base_list), alphabet=IUPAC.ambiguous_dna)
+    masked_seq_rec.seq = Seq("".join(base_list), alphabet=IUPAC.ambiguous_dna)
 
-    return masked_seq_req
+    return masked_seq_rec
 
 
-def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_base_score, basename, mask_char="N",
+def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basename, mask_char="N",
                               min_seq_score=None):
     for seq_rec in records:
-        trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=False)
+        trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=False)
 
         # primers found in forword direction
         if trimed_seq_rec is not None:
-            avg_score = numpy.mean(trimed_seq_rec.letter_annotations["phred_quality"])
+            qualities = trimed_seq_rec.letter_annotations["phred_quality"]
+            if len(qualities) == 0:  # todo: only check if we care
+                log.info("empty qualities list, excluding - {} {}".format(basename, seq_rec.id))
+                continue
+            avg_score = np.mean(qualities)
             if min_seq_score and (avg_score < min_seq_score):
                 log.info("seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
                                                                                               basename, seq_rec.id))
@@ -374,9 +372,13 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
 
         # primers not found in forword direction
         else:
-            trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, primer_mismatch, reverse_complement=True)
+            trimed_seq_rec = trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=True)
             if trimed_seq_rec is not None:  # primers found in reverse direction
-                avg_score = numpy.mean(trimed_seq_rec.letter_annotations["phred_quality"])
+                qualities = trimed_seq_rec.letter_annotations["phred_quality"]
+                if len(qualities) == 0:
+                    log.info("empty qualities list, excluding - {} {}".format(basename, seq_rec.id))
+                    continue
+                avg_score = np.mean(qualities)
                 if min_seq_score and (avg_score < min_seq_score):
                     log.info(
                         "seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
@@ -394,12 +396,21 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch, min_
 
 def param_dict_generator(args):
     output_dir = get_unique_dir(args.out_dir)
+    if args.sleep_time is not None:
+        time.sleep(args.sleep_time)
 
     if args.in_file_list is None:
         in_file_list = [args.in_file]
     else:
         with open(args.in_file_list, "r") as f:
-            in_file_list = [os.path.join(args.in_dir, l.strip()) for l in f.readlines()]
+            lines = f.readlines()
+            in_file_list = []
+            for line in lines:
+                in_file = line.strip()
+                if os.path.isfile(in_file):
+                    in_file_list.append(in_file)
+                else:
+                    log.info("file not found - {}".format(in_file))
 
     for fn in in_file_list:
         yield {
@@ -412,7 +423,6 @@ def param_dict_generator(args):
             # base filters
             "min_base_score": args.min_base_score,
             # sequence filters
-            "primer_mismatch": args.primer_mismatch,
             "sequence_max_mask": args.sequence_max_mask,
             "max_len_delta": args.max_len_delta,
             # optional sequence filters
@@ -423,7 +433,9 @@ def param_dict_generator(args):
             "min_seq_count": args.min_seq_count,
             "alignment_max_amb": args.alignment_max_amb,
             # consensus options
+            "consensus_diploid_mode": args.consensus_diploid_mode,
             "consensus_threshold": args.consensus_threshold,
+            "consensus_diploid_threshold": args.consensus_diploid_threshold,
             "consensus_require_multiple": args.consensus_require_multiple,
             "consensus_ambiguous_char": args.consensus_ambiguous_char,
             "consensus_ignore_mask_char": args.consensus_ignore_mask_char}
@@ -438,7 +450,6 @@ def process_fastq(input_fn,
                   aligner="muscle",
                   mask_char="N",
                   min_base_score=60,
-                  primer_mismatch=2,
                   sequence_max_mask=None,
                   max_len_delta=None,
                   expected_length=None,
@@ -446,16 +457,22 @@ def process_fastq(input_fn,
                   min_seq_score=None,
                   min_seq_count=1,
                   alignment_max_amb=None,
+                  consensus_diploid_mode=False,
                   consensus_threshold=0.7,
+                  consensus_diploid_threshold=0.3,
                   consensus_require_multiple=False,
                   consensus_ambiguous_char="X",
                   consensus_ignore_mask_char=False):
+
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
-    # noinspection PyTypeChecker
-    primer_a = basename.split("_")[-1].split(".")[2]
-    # noinspection PyTypeChecker
-    primer_b = basename.split("_")[-1].split(".")[3]
+    serch_obj = re.search(r"_([^._]+?)\.([^.]+?)\.([^.]+?)\.([^.]+?)$", basename)  # todo: regex should be user set
+    if not serch_obj:
+        log.info("couldn't parse adapters from filename, skipping - {}".format(input_fn))
+        return
+    else:
+        primer_a = serch_obj.group(3)
+        primer_b = serch_obj.group(4)
 
     # parse fastq file
     if max_len is None:
@@ -463,7 +480,7 @@ def process_fastq(input_fn,
     else:
         records = (r for r in SeqIO.parse(input_fn, "fastq", alphabet=IUPAC.ambiguous_dna) if len(r) < max_len)
 
-    clean_records = list(trim_and_mask_seq_records(records, primer_a, primer_b, primer_mismatch,
+    clean_records = list(trim_and_mask_seq_records(records, primer_a, primer_b,
                                                    min_base_score, basename, mask_char, min_seq_score))
 
     if len(clean_records) < min_seq_count:
@@ -536,7 +553,7 @@ def process_fastq(input_fn,
             pass
         else:
             for r in clean_records:
-                f.write(r.format("fasta"))
+                f.write(r.format("fasta-2line"))
 
     # align clean fasta
     if aligner == "muscle":
@@ -572,10 +589,18 @@ def process_fastq(input_fn,
     summary_align = AlignInfo.SummaryInfo(alignment)
 
     # write consensus fasta
-    consensus = gap_consensus(summary_align, threshold=consensus_threshold, mask_char=mask_char,
-                              consensus_ambiguous_char=consensus_ambiguous_char, consensus_alpha=IUPAC.ambiguous_dna,
-                              require_multiple=consensus_require_multiple,
-                              consensus_ignore_mask_char=consensus_ignore_mask_char)
+    if consensus_diploid_mode:
+        consensus = diploid_gap_consensus(summary_align, threshold=consensus_threshold,
+                                          diploid_threshold=consensus_diploid_threshold, mask_char=mask_char,
+                                          consensus_ambiguous_char=consensus_ambiguous_char,
+                                          consensus_alpha=IUPAC.ambiguous_dna,
+                                          require_multiple=consensus_require_multiple,
+                                          consensus_ignore_mask_char=consensus_ignore_mask_char)
+    else:
+        consensus = gap_consensus(summary_align, threshold=consensus_threshold, mask_char=mask_char,
+                                  consensus_ambiguous_char=consensus_ambiguous_char, consensus_alpha=IUPAC.ambiguous_dna,
+                                  require_multiple=consensus_require_multiple,
+                                  consensus_ignore_mask_char=consensus_ignore_mask_char)
     amb_count = consensus.upper().count(mask_char)
     if (alignment_max_amb is not None) and (amb_count > alignment_max_amb):
         log.info(
@@ -587,8 +612,9 @@ def process_fastq(input_fn,
     # noinspection PyTypeChecker
     seq_rec = SeqRecord(seq=seq, id=basename.split("prime_")[0] + "prime", description=description)
     with open(os.path.join(output_dir, basename) + ".{}.consensus.fasta".format(len(alignment)), "wt") as f:
-        fasta_entry = seq_rec.format("fasta").strip().split("\n")
-        fasta_entry = fasta_entry[0] + "\n" + "".join(fasta_entry[1:]) + "\n"
+        # fasta_entry = seq_rec.format("fasta").strip().split("\n")
+        # fasta_entry = fasta_entry[0] + "\n" + "".join(fasta_entry[1:]) + "\n"
+        fasta_entry = seq_rec.format("fasta-2line")
         f.write(fasta_entry)
 
 
@@ -609,23 +635,18 @@ def main():
 
     # files/directories
     parser.add_argument('-i', '--in_file',
-                        default=('Final.HQpolish99nomaxmin600.ccs.BX140414_001.5prime_'
-                                 'CACAGAGACACGCACA.'
-                                 'CGTCTCTATCTCTCTA.'
-                                 'GCAGTCGAACATGTAGCTGACTCAGGTCACTCGCCTAAACTTCAGCCATT.'
-                                 'TGATTYTTTGGACACCCAGAAGTTTACTACGATGTGATGCTTGCACAAGTGATCCA.'
-                                 'fastq'),
+                        default=('diploid.test_ATAGCGACGCGATATA.AGCGTCTCGCATCATG.TYTCAACDAAYCAYAAAGATATTGA.TAATATGGCAGATTAGTGCAATGGA.fastq'),
                         help='path to input file')
 
     parser.add_argument('-o', '--out_dir', default="output",
                         help='path to output dir')
 
     # batch mode filelist settings
-    parser.add_argument('--in_file_list', default="",
+    parser.add_argument('--in_file_list', default=None,
                         help='path to text file w/ an in_file filename on each line')
 
-    parser.add_argument('--in_dir', default=None,
-                        help='input dir of files named in in_file_list')
+    parser.add_argument('--sleep_time', type=int, default=None,
+                        help='max length overwhich a seq is excluded')
 
     # settings/options
     parser.add_argument('-l', '--aligner', default="muscle",
@@ -639,9 +660,6 @@ def main():
                         help='score below which a nuc is masked')
 
     # sequence filters
-    parser.add_argument('-e', '--primer_mismatch', type=int, default="2",
-                        help='number of errors allowed in primer match')
-
     parser.add_argument('-p', '--sequence_max_mask', type=int, default="5",
                         help='number of mask_char allowed in sequences to be aligned')
 
@@ -666,7 +684,13 @@ def main():
                         help='number of consensus_ambiguous_char allowed in final consensus sequences')
 
     # consensus options
+    parser.add_argument('--consensus_diploid_mode', action='store_true',
+                        help='use diploid mode for consensus calling')
+
     parser.add_argument('--consensus_threshold', type=float, default=".7",
+                        help='proportion threshold for consensus to call a base.')
+
+    parser.add_argument('--consensus_diploid_threshold', type=float, default=".3",
                         help='proportion threshold for consensus to call a base.')
 
     parser.add_argument('--consensus_require_multiple', action='store_true',
@@ -680,7 +704,11 @@ def main():
 
     args = parser.parse_args()
 
-    processor_count = min(len(args.sample_names), multiprocessing.cpu_count())
+    if args.in_file_list:
+        processor_count = min(len(args.in_file_list), multiprocessing.cpu_count())
+    else:
+        processor_count = multiprocessing.cpu_count()
+
     with multiprocessing.Pool(processor_count) as p:
         data = p.map(spawn, param_dict_generator(args))
 
