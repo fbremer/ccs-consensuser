@@ -16,7 +16,7 @@ import time
 from glob import glob
 
 import Bio
-import numpy as np
+import numpy
 import pysam
 from Bio import AlignIO
 from Bio import SeqIO
@@ -65,7 +65,7 @@ log = logging.getLogger("ccs-consensuser.py")
 
 # Copyright 2000 Brad Chapman.  All rights reserved.
 #
-# This f̶̶i̶l̶e section is p̶a̶r̶t̶ ̶o̶f modified from the Biopython distribution and governed by your
+# This f̶̶i̶l̶e (section) is (modified from) part of the Biopython distribution and governed by your
 # choice of the "Biopython License Agreement" or the "BSD 3-Clause License".
 # Please see the LICENSE file that should have been included as part of this
 # package.
@@ -76,7 +76,6 @@ calculations at the masked position
 """
 
 
-# todo: add an any_gap flag
 def gap_consensus(summary_align, threshold=.7, mask_char="N", consensus_ambiguous_char="X",
                   consensus_alpha=None, require_multiple=False, consensus_ignore_mask_char=False):
     # Iddo Friedberg, 1-JUL-2004: changed ambiguous default to "X"
@@ -137,21 +136,12 @@ def diploid_gap_consensus(summary_align, threshold=.7, diploid_threshold=.3, mas
     if "collapse_iupac" not in diploid_gap_consensus.__dict__:
         # sorted tuples map to iupac codes
         diploid_gap_consensus.collapse_iupac = {
-            # ('a',): 'a',
-            # ('g',): 'g',
-            # ('c',): 'c',
-            # ('t',): 't',
             ('c', 't'): 'y',
             ('a', 'g'): 'r',
             ('a', 't'): 'w',
             ('c', 'g'): 's',
             ('g', 't'): 'k',
             ('a', 'c'): 'm',
-            # ('a', 'g', 't'): 'd',
-            # ('a', 'c', 'g'): 'v',
-            # ('a', 'c', 't'): 'h',
-            # ('c', 'g', 't'): 'b',
-            # ('a', 'c', 'g', 't'): 'n',
         }
 
     # Iddo Friedberg, 1-JUL-2004: changed ambiguous default to "X"
@@ -205,6 +195,7 @@ def diploid_gap_consensus(summary_align, threshold=.7, diploid_threshold=.3, mas
 
             if len(diploid_atoms) >= 2 and diploid_atoms[0][1] + diploid_atoms[1][1] >= threshold_count:
                 base_set = tuple(sorted([atom.lower() for atom, count in diploid_atoms[:2]]))
+                # noinspection PyTypeChecker
                 consensus += diploid_gap_consensus.collapse_iupac[base_set]
             else:
                 consensus += consensus_ambiguous_char
@@ -309,7 +300,6 @@ def quality_string_map(qualities, qual_str_to_list=False):
 
 
 def trim_both_ends(seq_rec, primer_a, primer_b, reverse_complement=False):
-    # primer_b = str(Seq(primer_b).reverse_complement())
     if reverse_complement:
         rc = seq_rec.reverse_complement()
         un_trimed_seq = str(rc.seq)
@@ -363,7 +353,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
             if len(qualities) == 0:  # todo: only check if we care
                 log.info("empty qualities list, excluding - {} {}".format(basename, seq_rec.id))
                 continue
-            avg_score = np.mean(qualities)
+            avg_score = numpy.mean(qualities)
             if min_seq_score and (avg_score < min_seq_score):
                 log.info("seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
                                                                                               basename, seq_rec.id))
@@ -378,7 +368,7 @@ def trim_and_mask_seq_records(records, primer_a, primer_b, min_base_score, basen
                 if len(qualities) == 0:
                     log.info("empty qualities list, excluding - {} {}".format(basename, seq_rec.id))
                     continue
-                avg_score = np.mean(qualities)
+                avg_score = numpy.mean(qualities)
                 if min_seq_score and (avg_score < min_seq_score):
                     log.info(
                         "seq excluded - avg_score:{:4.2f} < min_seq_score:{} - {} {}".format(avg_score, min_seq_score,
@@ -438,7 +428,8 @@ def param_dict_generator(args):
             "consensus_diploid_threshold": args.consensus_diploid_threshold,
             "consensus_require_multiple": args.consensus_require_multiple,
             "consensus_ambiguous_char": args.consensus_ambiguous_char,
-            "consensus_ignore_mask_char": args.consensus_ignore_mask_char}
+            "consensus_ignore_mask_char": args.consensus_ignore_mask_char,
+            "primer_regex": args.primer_regex}
 
 
 def spawn(param_dict):
@@ -462,17 +453,18 @@ def process_fastq(input_fn,
                   consensus_diploid_threshold=0.3,
                   consensus_require_multiple=False,
                   consensus_ambiguous_char="X",
-                  consensus_ignore_mask_char=False):
+                  consensus_ignore_mask_char=False,
+                  primer_regex=r"_[^._]+?\.[^.]+?\.([^.]+?)\.([^.]+?)$"):
 
     # parse filename
     basename = os.path.splitext(os.path.basename(input_fn))[0]
-    serch_obj = re.search(r"_([^._]+?)\.([^.]+?)\.([^.]+?)\.([^.]+?)$", basename)  # todo: regex should be user set
+    serch_obj = re.search(primer_regex, basename)
     if not serch_obj:
         log.info("couldn't parse adapters from filename, skipping - {}".format(input_fn))
         return
     else:
-        primer_a = serch_obj.group(3)
-        primer_b = serch_obj.group(4)
+        primer_a = serch_obj.group(1)
+        primer_b = serch_obj.group(2)
 
     # parse fastq file
     if max_len is None:
@@ -631,11 +623,15 @@ class HelpAndQuitOnFailParser(argparse.ArgumentParser):
 
 
 def main():
-    parser = HelpAndQuitOnFailParser()
+    parser = HelpAndQuitOnFailParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # files/directories
     parser.add_argument('-i', '--in_file',
-                        default=('diploid.test_ATAGCGACGCGATATA.AGCGTCTCGCATCATG.TYTCAACDAAYCAYAAAGATATTGA.TAATATGGCAGATTAGTGCAATGGA.fastq'),
+                        default=('diploid.test_'
+                                 'ATAGCGACGCGATATA.'
+                                 'AGCGTCTCGCATCATG.'
+                                 'TYTCAACDAAYCAYAAAGATATTGA.'
+                                 'TAATATGGCAGATTAGTGCAATGGA.fastq'),
                         help='path to input file')
 
     parser.add_argument('-o', '--out_dir', default="output",
@@ -701,6 +697,10 @@ def main():
 
     parser.add_argument('--consensus_ignore_mask_char', action='store_true',
                         help='discount mask char when calculating consensus')
+
+    parser.add_argument('--primer_regex', default=r"_[^._]+?\.[^.]+?\.([^.]+?)\.([^.]+?)$",
+                        help=("regex to parse primers from filename. \n"
+                              "default assumes sampleName_barcodeA.bardoceB.primerA.primerB.extension"))
 
     args = parser.parse_args()
 
